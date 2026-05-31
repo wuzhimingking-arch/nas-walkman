@@ -1421,7 +1421,7 @@ private fun SettingsScreen(state: AppUiState, viewModel: AppViewModel) {
             AppCard {
                 Text("NAS随身听", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "0.4.1 · 第三方私有 NAS 音乐播放器",
+                    "0.4.2 · 第三方私有 NAS 音乐播放器",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
@@ -1431,6 +1431,16 @@ private fun SettingsScreen(state: AppUiState, viewModel: AppViewModel) {
                 )
                 Text(
                     "本应用为第三方 NAS 音乐播放器，非飞牛官方应用，未与飞牛官方建立授权、合作或从属关系。应用仅用于连接用户自己的 NAS 并播放个人音乐文件。",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    "隐私说明：本应用不上传 NAS 地址、账号、密码、音乐列表或播放记录。连接信息仅保存在本机。",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    "开源地址：https://github.com/wuzhimingking-arch/nas-walkman",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodySmall,
                 )
