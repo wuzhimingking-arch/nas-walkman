@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Favorite
@@ -82,6 +83,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.fnnas.music.data.db.NasConnectionMode
 import com.fnnas.music.data.db.PlaylistSummary
 import com.fnnas.music.data.db.TrackEntity
 import com.fnnas.music.data.repository.NasForm
@@ -118,7 +120,7 @@ fun MusicApp(viewModel: AppViewModel) {
         ) {
             if (state.nasServer == null) {
                 NasBindingScreen(
-                    title = "连接你的飞牛 NAS",
+                    title = "连接飞牛 NAS",
                     form = viewModel.defaultForm(),
                     isBusy = state.isBusy,
                     onTest = viewModel::testConnection,
@@ -174,8 +176,13 @@ private fun NasBindingScreen(
     onTest: (NasForm) -> Unit,
     onSave: (NasForm) -> Unit,
 ) {
-    var editing by remember(form.baseUrl, form.username, form.musicRootPath) { mutableStateOf(form) }
+    var editing by remember(form.mode, form.inputAddress, form.username, form.musicRootPath) { mutableStateOf(form) }
     var showPassword by remember { mutableStateOf(false) }
+    var showHelp by remember { mutableStateOf(false) }
+
+    if (showHelp) {
+        FnIdHelpDialog(onDismiss = { showHelp = false })
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -187,84 +194,123 @@ private fun NasBindingScreen(
         item {
             Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Text(
-                "连接你的飞牛 NAS，远程播放自己保存的音乐。",
+                "通过 FN Connect 远程播放家里 NAS 中的音乐",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         item {
-            OutlinedTextField(
-                value = editing.name,
-                onValueChange = { editing = editing.copy(name = it) },
-                label = { Text("NAS 名称") },
-                singleLine = true,
+            Card(
                 modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        item {
-            OutlinedTextField(
-                value = editing.baseUrl,
-                onValueChange = { editing = editing.copy(baseUrl = it) },
-                label = { Text("WebDAV 地址") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            if (editing.baseUrl.startsWith("http://", ignoreCase = true)) {
-                Text(
-                    "HTTP 连接未加密，建议使用 HTTPS。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary,
-                    modifier = Modifier.padding(top = 6.dp),
-                )
+                shape = RoundedCornerShape(8.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("连接方式", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    ConnectionModeSelector(
+                        selected = editing.mode,
+                        onSelected = { editing = editing.copy(mode = it) },
+                    )
+                    Text(
+                        connectionModeDescription(editing.mode),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
         }
         item {
-            OutlinedTextField(
-                value = editing.username,
-                onValueChange = { editing = editing.copy(username = it) },
-                label = { Text("用户名") },
-                singleLine = true,
+            Card(
                 modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        item {
-            OutlinedTextField(
-                value = editing.password,
-                onValueChange = { editing = editing.copy(password = it) },
-                label = { Text("密码") },
-                singleLine = true,
-                visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-                trailingIcon = {
-                    IconButton(onClick = { showPassword = !showPassword }) {
-                        Icon(
-                            if (showPassword) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
-                            contentDescription = if (showPassword) "隐藏密码" else "显示密码",
+                shape = RoundedCornerShape(8.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    SectionHeader("连接信息") {
+                        if (editing.mode == NasConnectionMode.FN_CONNECT) {
+                            TextButton(onClick = { showHelp = true }) {
+                                Icon(Icons.AutoMirrored.Rounded.HelpOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("哪里找 FN ID？")
+                            }
+                        }
+                    }
+                    OutlinedTextField(
+                        value = editing.name,
+                        onValueChange = { editing = editing.copy(name = it) },
+                        label = { Text("NAS 名称") },
+                        placeholder = { Text("家里的飞牛") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = editing.inputAddress,
+                        onValueChange = { editing = editing.copy(inputAddress = it) },
+                        label = { Text(addressLabel(editing.mode)) },
+                        placeholder = { Text(addressPlaceholder(editing.mode)) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (editing.mode == NasConnectionMode.FN_CONNECT &&
+                        editing.inputAddress.isNotBlank() &&
+                        !editing.inputAddress.startsWith("http", ignoreCase = true)
+                    ) {
+                        Text(
+                            "如果你在飞牛 fnOS 中开启了 FN Connect，可以直接填写 FN ID；自动连接失败时，请改填完整远程访问地址。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                },
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        item {
-            OutlinedTextField(
-                value = editing.musicRootPath,
-                onValueChange = { editing = editing.copy(musicRootPath = it) },
-                label = { Text("音乐根目录") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        item {
-            SettingSwitch(
-                title = "仅 Wi-Fi 下自动扫描",
-                checked = editing.autoScanWifiOnly,
-                onCheckedChange = { editing = editing.copy(autoScanWifiOnly = it) },
-            )
-            SettingSwitch(
-                title = "允许移动网络播放",
-                checked = editing.allowMobilePlayback,
-                onCheckedChange = { editing = editing.copy(allowMobilePlayback = it) },
-            )
+                    if (editing.inputAddress.startsWith("http://", ignoreCase = true)) {
+                        Text(
+                            "HTTP 连接未加密，建议使用 HTTPS。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
+                    }
+                    OutlinedTextField(
+                        value = editing.username,
+                        onValueChange = { editing = editing.copy(username = it) },
+                        label = { Text("飞牛 NAS 用户名") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = editing.password,
+                        onValueChange = { editing = editing.copy(password = it) },
+                        label = { Text("飞牛 NAS 密码") },
+                        singleLine = true,
+                        visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { showPassword = !showPassword }) {
+                                Icon(
+                                    if (showPassword) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+                                    contentDescription = if (showPassword) "隐藏密码" else "显示密码",
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = editing.musicRootPath,
+                        onValueChange = { editing = editing.copy(musicRootPath = it) },
+                        label = { Text("音乐目录") },
+                        placeholder = { Text("/Music 或 /音乐") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    SettingSwitch(
+                        title = "仅 Wi-Fi 下自动扫描",
+                        checked = editing.autoScanWifiOnly,
+                        onCheckedChange = { editing = editing.copy(autoScanWifiOnly = it) },
+                    )
+                    SettingSwitch(
+                        title = "允许移动网络播放",
+                        checked = editing.allowMobilePlayback,
+                        onCheckedChange = { editing = editing.copy(allowMobilePlayback = it) },
+                    )
+                }
+            }
         }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
@@ -288,8 +334,87 @@ private fun NasBindingScreen(
                 }
             }
         }
+        item {
+            Text(
+                "App 只读取音乐文件，不会上传、删除或修改 NAS 文件。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         item { Spacer(Modifier.height(24.dp)) }
     }
+}
+
+@Composable
+private fun ConnectionModeSelector(
+    selected: NasConnectionMode,
+    onSelected: (NasConnectionMode) -> Unit,
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+        FilterChip(
+            selected = selected == NasConnectionMode.FN_CONNECT,
+            onClick = { onSelected(NasConnectionMode.FN_CONNECT) },
+            label = { Text("FN Connect") },
+        )
+        FilterChip(
+            selected = selected == NasConnectionMode.REMOTE_URL,
+            onClick = { onSelected(NasConnectionMode.REMOTE_URL) },
+            label = { Text("远程地址") },
+        )
+        FilterChip(
+            selected = selected == NasConnectionMode.WEBDAV_ADVANCED,
+            onClick = { onSelected(NasConnectionMode.WEBDAV_ADVANCED) },
+            label = { Text("WebDAV 高级") },
+        )
+    }
+}
+
+@Composable
+private fun FnIdHelpDialog(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("哪里找 FN ID？") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("1. 打开飞牛 fnOS 或飞牛 App。")
+                Text("2. 确认已经开启 FN Connect 远程访问。")
+                Text("3. 找到 FN ID 或远程访问地址。")
+                Text("4. 回到本 App，输入 FN ID 或完整远程访问地址。")
+                Text("5. 再填写飞牛 NAS 的用户名和密码。")
+                Text("6. 音乐目录填写 NAS 里保存歌曲的文件夹路径，例如 /Music。")
+                Text(
+                    "不同系统版本的入口可能不同，本 App 不依赖飞牛内部私有接口。",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("知道了") } },
+    )
+}
+
+private fun connectionModeDescription(mode: NasConnectionMode): String = when (mode) {
+    NasConnectionMode.FN_CONNECT -> "推荐。输入 FN ID 或从飞牛系统复制的 FN Connect 远程访问地址。"
+    NasConnectionMode.REMOTE_URL -> "适合已经配置公网 IP、DDNS、反向代理或 HTTPS 域名的用户。"
+    NasConnectionMode.WEBDAV_ADVANCED -> "适合已经知道文件访问服务如何配置的高级用户。"
+}
+
+private fun addressLabel(mode: NasConnectionMode): String = when (mode) {
+    NasConnectionMode.FN_CONNECT -> "FN ID 或飞牛远程访问地址"
+    NasConnectionMode.REMOTE_URL -> "访问地址"
+    NasConnectionMode.WEBDAV_ADVANCED -> "WebDAV 地址"
+}
+
+private fun addressPlaceholder(mode: NasConnectionMode): String = when (mode) {
+    NasConnectionMode.FN_CONNECT -> "myfnid 或 https://myfnid.5ddd.com"
+    NasConnectionMode.REMOTE_URL -> "https://nas.example.com"
+    NasConnectionMode.WEBDAV_ADVANCED -> "https://nas.example.com/dav"
+}
+
+private fun connectionModeLabel(mode: NasConnectionMode): String = when (mode) {
+    NasConnectionMode.FN_CONNECT -> "FN Connect"
+    NasConnectionMode.REMOTE_URL -> "远程地址"
+    NasConnectionMode.WEBDAV_ADVANCED -> "WebDAV 高级"
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -561,6 +686,8 @@ private fun PlayerScreen(state: AppUiState, viewModel: AppViewModel) {
 
 @Composable
 private fun SettingsScreen(state: AppUiState, viewModel: AppViewModel) {
+    var showConnectionEditor by remember { mutableStateOf(false) }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -569,21 +696,39 @@ private fun SettingsScreen(state: AppUiState, viewModel: AppViewModel) {
     ) {
         item { Text("设置", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold) }
         item {
-            SettingsCard("NAS 连接管理") {
-                Text(state.nasServer?.name ?: "未连接 NAS", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    state.nasServer?.baseUrl ?: "先连接你的飞牛 NAS",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+            SettingsCard("连接设置") {
+                val server = state.nasServer
+                SettingInfoRow("当前连接方式", server?.let { connectionModeLabel(it.mode) } ?: "未连接")
+                SettingInfoRow("NAS 名称", server?.name ?: "未连接 NAS")
+                SettingInfoRow("FN ID / 远程访问地址", server?.inputAddress?.ifBlank { server.resolvedBaseUrl } ?: "先连接你的飞牛 NAS")
+                SettingInfoRow("音乐目录", server?.musicRootPath ?: "/Music")
                 Spacer(Modifier.height(8.dp))
-                NasInlineEditor(
-                    form = viewModel.defaultForm(),
-                    isBusy = state.isBusy,
-                    onTest = viewModel::testConnection,
-                    onSave = viewModel::saveNas,
-                )
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = viewModel::testCurrentConnection,
+                        enabled = !state.isBusy && server != null,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("测试连接") }
+                    Button(
+                        onClick = { showConnectionEditor = !showConnectionEditor },
+                        enabled = !state.isBusy,
+                        modifier = Modifier.weight(1f),
+                    ) { Text(if (showConnectionEditor) "收起" else "修改连接") }
+                }
+                OutlinedButton(
+                    onClick = viewModel::deleteBinding,
+                    enabled = !state.isBusy && server != null,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("删除绑定") }
+                if (showConnectionEditor) {
+                    HorizontalDivider()
+                    NasInlineEditor(
+                        form = viewModel.defaultForm(),
+                        isBusy = state.isBusy,
+                        onTest = viewModel::testConnection,
+                        onSave = viewModel::saveNas,
+                    )
+                }
             }
         }
         item {
@@ -638,7 +783,7 @@ private fun SettingsScreen(state: AppUiState, viewModel: AppViewModel) {
         item {
             SettingsCard("关于") {
                 Text("飞牛音乐", style = MaterialTheme.typography.titleMedium)
-                Text("0.1.0 · 私有 NAS 音乐播放器", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("0.2.0 · 私有 NAS 音乐播放器", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         item { Spacer(Modifier.height(18.dp)) }
@@ -652,11 +797,21 @@ private fun NasInlineEditor(
     onTest: (NasForm) -> Unit,
     onSave: (NasForm) -> Unit,
 ) {
-    var editing by remember(form.baseUrl, form.username, form.musicRootPath) { mutableStateOf(form) }
+    var editing by remember(form.mode, form.inputAddress, form.username, form.musicRootPath) { mutableStateOf(form) }
     var showPassword by remember { mutableStateOf(false) }
+    var showHelp by remember { mutableStateOf(false) }
+
+    if (showHelp) {
+        FnIdHelpDialog(onDismiss = { showHelp = false })
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("修改连接时需要重新输入密码。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("连接方式", fontWeight = FontWeight.SemiBold)
+        ConnectionModeSelector(
+            selected = editing.mode,
+            onSelected = { editing = editing.copy(mode = it) },
+        )
         OutlinedTextField(
             value = editing.name,
             onValueChange = { editing = editing.copy(name = it) },
@@ -665,23 +820,38 @@ private fun NasInlineEditor(
             modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
-            value = editing.baseUrl,
-            onValueChange = { editing = editing.copy(baseUrl = it) },
-            label = { Text("WebDAV 地址") },
+            value = editing.inputAddress,
+            onValueChange = { editing = editing.copy(inputAddress = it) },
+            label = { Text(addressLabel(editing.mode)) },
+            placeholder = { Text(addressPlaceholder(editing.mode)) },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
+        if (editing.mode == NasConnectionMode.FN_CONNECT) {
+            TextButton(onClick = { showHelp = true }) {
+                Icon(Icons.AutoMirrored.Rounded.HelpOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("哪里找 FN ID？")
+            }
+        }
+        if (editing.inputAddress.startsWith("http://", ignoreCase = true)) {
+            Text(
+                "HTTP 连接未加密，建议使用 HTTPS。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+        }
         OutlinedTextField(
             value = editing.username,
             onValueChange = { editing = editing.copy(username = it) },
-            label = { Text("用户名") },
+            label = { Text("飞牛 NAS 用户名") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
             value = editing.password,
             onValueChange = { editing = editing.copy(password = it) },
-            label = { Text("密码") },
+            label = { Text("飞牛 NAS 密码") },
             singleLine = true,
             visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
             trailingIcon = {
@@ -697,7 +867,8 @@ private fun NasInlineEditor(
         OutlinedTextField(
             value = editing.musicRootPath,
             onValueChange = { editing = editing.copy(musicRootPath = it) },
-            label = { Text("音乐根目录") },
+            label = { Text("音乐目录") },
+            placeholder = { Text("/Music 或 /音乐") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
@@ -923,6 +1094,23 @@ private fun SettingsCard(title: String, content: @Composable ColumnScope.() -> U
             HorizontalDivider()
             content()
         }
+    }
+}
+
+@Composable
+private fun SettingInfoRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(label, modifier = Modifier.width(118.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            value,
+            modifier = Modifier.weight(1f),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

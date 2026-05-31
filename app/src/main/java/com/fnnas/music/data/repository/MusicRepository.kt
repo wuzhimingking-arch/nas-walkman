@@ -4,14 +4,17 @@ import android.content.Context
 import androidx.room.withTransaction
 import com.fnnas.music.data.db.AppDatabase
 import com.fnnas.music.data.db.CacheItemEntity
+import com.fnnas.music.data.db.NasConnectionMode
 import com.fnnas.music.data.db.NasServerEntity
 import com.fnnas.music.data.db.PlayHistoryEntity
 import com.fnnas.music.data.db.PlaylistEntity
 import com.fnnas.music.data.db.PlaylistTrackEntity
 import com.fnnas.music.data.db.TrackEntity
+import com.fnnas.music.network.ConnectionResolver
+import com.fnnas.music.network.NasConnectionDraft
 import com.fnnas.music.network.NasCredentials
+import com.fnnas.music.network.NasFileClient
 import com.fnnas.music.network.RemoteItem
-import com.fnnas.music.network.WebDavClient
 import com.fnnas.music.network.WebDavResult
 import com.fnnas.music.security.CredentialCipher
 import java.io.File
@@ -22,7 +25,8 @@ import kotlinx.coroutines.withContext
 
 data class NasForm(
     val name: String = "",
-    val baseUrl: String = "",
+    val mode: NasConnectionMode = NasConnectionMode.FN_CONNECT,
+    val inputAddress: String = "",
     val username: String = "",
     val password: String = "",
     val musicRootPath: String = "/Music",
@@ -40,7 +44,8 @@ class MusicRepository(
     private val context: Context,
     private val database: AppDatabase,
     private val credentialCipher: CredentialCipher,
-    private val webDavClient: WebDavClient,
+    private val connectionResolver: ConnectionResolver,
+    private val nasFileClient: NasFileClient,
     val settingsStore: SettingsStore,
 ) {
     val nasServer: Flow<NasServerEntity?> = database.nasDao().observeActiveNas()
@@ -55,14 +60,19 @@ class MusicRepository(
     suspend fun saveNas(form: NasForm): WebDavResult {
         validateForm(form)?.let { return WebDavResult.Failure(it) }
         val normalized = form.normalized()
-        val test = testConnection(normalized)
-        if (test !is WebDavResult.Success) return test
+        val attempt = testResolvedConnection(normalized)
+        if (attempt.result !is WebDavResult.Success) return attempt.result
+        val resolved = connectionResolver.resolve(normalized.toConnectionDraft())
+        val successfulBaseUrl = attempt.successfulBaseUrl ?: resolved.primaryBaseUrl
         val existing = database.nasDao().getActiveNas()
         val now = System.currentTimeMillis()
         val server = NasServerEntity(
             id = existing?.id ?: 1L,
             name = normalized.name.ifBlank { "家里的飞牛 NAS" },
-            baseUrl = normalized.baseUrl,
+            baseUrl = successfulBaseUrl,
+            mode = normalized.mode,
+            inputAddress = resolved.inputAddress,
+            resolvedBaseUrl = successfulBaseUrl,
             username = normalized.username,
             encryptedPassword = credentialCipher.encrypt(normalized.password),
             musicRootPath = normalized.musicRootPath,
@@ -73,31 +83,59 @@ class MusicRepository(
             lastConnectedAt = now,
         )
         database.nasDao().upsert(server)
-        return WebDavResult.Success
+        return WebDavResult.Success()
     }
 
     suspend fun testConnection(form: NasForm): WebDavResult {
         validateForm(form)?.let { return WebDavResult.Failure(it) }
-        val normalized = form.normalized()
-        val credentials = NasCredentials(
-            serverId = 1L,
-            baseUrl = normalized.baseUrl,
-            username = normalized.username,
-            password = normalized.password,
-            musicRootPath = normalized.musicRootPath,
-        )
-        val result = webDavClient.testConnection(credentials)
+        return testResolvedConnection(form.normalized()).result
+    }
+
+    suspend fun testCurrentConnection(): WebDavResult {
+        val credentials = currentCredentials() ?: return WebDavResult.Failure("先连接你的飞牛 NAS")
+        val result = nasFileClient.testConnection(credentials)
+        if (result is WebDavResult.Success) {
+            database.nasDao().markConnected(credentials.serverId, System.currentTimeMillis())
+        }
+        return result
+    }
+
+    private suspend fun testResolvedConnection(normalized: NasForm): ConnectionAttempt {
+        val resolved = connectionResolver.resolve(normalized.toConnectionDraft())
+        var lastFailure: WebDavResult.Failure? = null
+        var result: WebDavResult = WebDavResult.Failure("无法连接到飞牛 NAS，请检查 FN Connect 是否开启或当前网络是否可用。")
+        var successfulBaseUrl: String? = null
+        for (candidate in resolved.candidateBaseUrls) {
+            val credentials = NasCredentials(
+                serverId = 1L,
+                baseUrl = candidate,
+                username = normalized.username,
+                password = normalized.password,
+                musicRootPath = normalized.musicRootPath,
+            )
+            result = nasFileClient.testConnection(credentials)
+            if (result is WebDavResult.Success) {
+                successfulBaseUrl = candidate
+                break
+            }
+            lastFailure = result as? WebDavResult.Failure
+        }
+        if (result !is WebDavResult.Success && normalized.mode == NasConnectionMode.FN_CONNECT && resolved.wasFnIdOnly) {
+            result = WebDavResult.Failure("已识别 FN ID，但还需要完整的飞牛远程访问地址或开启文件访问服务。请复制飞牛系统中的完整远程访问地址后重试。")
+        } else if (result !is WebDavResult.Success) {
+            lastFailure?.let { result = it }
+        }
         if (result is WebDavResult.Success) {
             database.nasDao().getActiveNas()?.let { database.nasDao().markConnected(it.id, System.currentTimeMillis()) }
         }
-        return result
+        return ConnectionAttempt(result = result, successfulBaseUrl = successfulBaseUrl)
     }
 
     suspend fun currentCredentials(): NasCredentials? {
         val server = database.nasDao().getActiveNas() ?: return null
         return NasCredentials(
             serverId = server.id,
-            baseUrl = server.baseUrl,
+            baseUrl = server.resolvedBaseUrl.ifBlank { server.baseUrl },
             username = server.username,
             password = credentialCipher.decrypt(server.encryptedPassword),
             musicRootPath = server.musicRootPath,
@@ -106,7 +144,7 @@ class MusicRepository(
 
     suspend fun listDirectory(remotePath: String? = null): List<RemoteItem> {
         val credentials = currentCredentials() ?: return emptyList()
-        return webDavClient.listDirectory(credentials, remotePath ?: credentials.musicRootPath)
+        return nasFileClient.listDirectory(credentials, remotePath ?: credentials.musicRootPath)
     }
 
     suspend fun scanLibrary(onProgress: (ScanProgress) -> Unit): WebDavResult {
@@ -121,7 +159,7 @@ class MusicRepository(
             while (stack.isNotEmpty()) {
                 val folder = stack.removeLast()
                 onProgress(ScanProgress(currentFolder = folder, discovered = discovered.size, isRunning = true))
-                val items = webDavClient.listDirectory(credentials, folder)
+                val items = nasFileClient.listDirectory(credentials, folder)
                 for (item in items) {
                     if (item.isDirectory) {
                         stack += item.remotePath
@@ -143,10 +181,10 @@ class MusicRepository(
                 }
             }
             onProgress(ScanProgress(discovered = discovered.size, isRunning = false))
-            WebDavResult.Success
+            WebDavResult.Success()
         } catch (error: Exception) {
             onProgress(ScanProgress(discovered = discovered.size, isRunning = false))
-            WebDavResult.Failure("扫描中断，请检查网络连接和 WebDAV 设置")
+            WebDavResult.Failure("扫描中断，请检查网络连接和飞牛远程访问设置。")
         }
     }
 
@@ -181,11 +219,11 @@ class MusicRepository(
         return@withContext try {
             val safeName = track.fileName.replace(Regex("""[^\w.\-]+"""), "_")
             val target = File(context.filesDir, "music-cache/${track.id}-$safeName")
-            val size = webDavClient.downloadToFile(credentials, track.remotePath, target)
+            val size = nasFileClient.downloadToFile(credentials, track.remotePath, target)
             val now = System.currentTimeMillis()
             database.trackDao().updateCachePath(track.id, target.absolutePath, now)
             database.cacheDao().upsert(CacheItemEntity(trackId = track.id, localPath = target.absolutePath, size = size, cachedAt = now))
-            WebDavResult.Success
+            WebDavResult.Success()
         } catch (_: Exception) {
             WebDavResult.Failure("缓存失败，请检查网络连接")
         }
@@ -203,25 +241,52 @@ class MusicRepository(
             ?.takeIf { it.exists() }
             ?.let { return android.net.Uri.fromFile(it).toString() }
         val credentials = currentCredentials() ?: return null
-        return webDavClient.urlFor(credentials, track.remotePath)
+        return nasFileClient.urlFor(credentials, track.remotePath)
+    }
+
+    suspend fun deleteBinding() {
+        withContext(Dispatchers.IO) {
+            File(context.filesDir, "music-cache").deleteRecursively()
+            database.withTransaction {
+                database.nasDao().clear()
+                database.playHistoryDao().clear()
+                database.cacheDao().clear()
+                database.trackDao().deleteAll()
+            }
+        }
     }
 
     private fun validateForm(form: NasForm): String? = when {
-        form.baseUrl.isBlank() -> "请填写 NAS 访问地址"
-        form.username.isBlank() || form.password.isBlank() -> "请填写登录信息"
+        form.inputAddress.isBlank() -> when (form.mode) {
+            NasConnectionMode.FN_CONNECT -> "请填写 FN ID 或飞牛远程访问地址"
+            NasConnectionMode.REMOTE_URL -> "请填写访问地址"
+            NasConnectionMode.WEBDAV_ADVANCED -> "请填写连接地址"
+        }
+        form.username.isBlank() || form.password.isBlank() -> "请填写飞牛 NAS 用户名和密码"
         form.musicRootPath.isBlank() -> "请填写音乐根目录"
         else -> null
     }
 
     private fun NasForm.normalized(): NasForm {
-        val url = baseUrl.trim().trimEnd('/')
         return copy(
             name = name.trim(),
-            baseUrl = url,
+            inputAddress = inputAddress.trim().trimEnd('/'),
             username = username.trim(),
             musicRootPath = normalizePath(musicRootPath),
         )
     }
+
+    private fun NasForm.toConnectionDraft(): NasConnectionDraft =
+        NasConnectionDraft(
+            mode = mode,
+            inputAddress = inputAddress,
+            musicRootPath = musicRootPath,
+        )
+
+    private data class ConnectionAttempt(
+        val result: WebDavResult,
+        val successfulBaseUrl: String?,
+    )
 
     private fun normalizePath(path: String): String = "/" + path.trim().replace('\\', '/').trim('/')
 

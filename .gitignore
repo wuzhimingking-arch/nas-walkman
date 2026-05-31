@@ -2,5 +2,6 @@
 .kotlin/
 **/build/
 local.properties
+gradle/gradle-daemon-jvm.properties
 *.iml
 .idea/

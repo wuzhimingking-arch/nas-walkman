@@ -12,8 +12,13 @@ import org.xmlpull.v1.XmlPullParserFactory
 import java.io.File
 import java.io.FileOutputStream
 import java.io.StringReader
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.net.URLDecoder
 import java.util.Locale
+import javax.net.ssl.SSLException
+import javax.net.ssl.SSLHandshakeException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -29,27 +34,41 @@ data class RemoteItem(
 }
 
 sealed class WebDavResult {
-    data object Success : WebDavResult()
+    data class Success(val message: String? = null) : WebDavResult()
     data class Failure(val message: String, val code: Int? = null) : WebDavResult()
 }
 
 class WebDavClient(private val baseClient: OkHttpClient) {
     suspend fun testConnection(credentials: NasCredentials): WebDavResult = withContext(Dispatchers.IO) {
         try {
-            listDirectory(credentials, credentials.musicRootPath)
-            WebDavResult.Success
+            val items = listDirectory(credentials, credentials.musicRootPath)
+            WebDavResult.Success(
+                message = if (items.isEmpty()) {
+                    "连接成功，但当前目录没有发现音乐"
+                } else {
+                    null
+                },
+            )
         } catch (error: WebDavHttpException) {
             when (error.code) {
-                401, 403 -> WebDavResult.Failure("登录失败，请检查用户名或密码", error.code)
-                404 -> WebDavResult.Failure("音乐目录不存在，请检查路径", error.code)
-                else -> WebDavResult.Failure("连接失败，请检查地址、端口、远程访问和账号密码", error.code)
+                401, 403 -> WebDavResult.Failure("登录失败，请检查飞牛 NAS 用户名或密码。", error.code)
+                404 -> WebDavResult.Failure("没有找到这个音乐目录，请检查路径是否正确。", error.code)
+                else -> WebDavResult.Failure("连接飞牛 NAS 失败，请检查 FN Connect 是否开启、地址是否正确、账号密码是否正确。", error.code)
             }
-        } catch (error: javax.net.ssl.SSLException) {
-            WebDavResult.Failure("SSL 证书异常，请检查 HTTPS 配置")
+        } catch (_: UnknownHostException) {
+            WebDavResult.Failure("无法找到这个 FN Connect 地址，请检查 FN ID 或远程访问地址。")
+        } catch (_: SocketTimeoutException) {
+            WebDavResult.Failure("连接超时，可能是网络较慢、NAS 休眠或 FN Connect 当前不稳定。")
+        } catch (_: SSLHandshakeException) {
+            WebDavResult.Failure("安全证书校验失败，请检查访问地址是否正确。")
+        } catch (_: SSLException) {
+            WebDavResult.Failure("安全连接失败，请检查访问地址或证书配置。")
+        } catch (_: ConnectException) {
+            WebDavResult.Failure("NAS 拒绝连接，请检查远程访问服务是否开启。")
         } catch (_: IllegalArgumentException) {
-            WebDavResult.Failure("请填写有效的 NAS 访问地址")
+            WebDavResult.Failure("请填写有效的 FN Connect 地址或远程访问地址。")
         } catch (_: Exception) {
-            WebDavResult.Failure("连接失败，请检查地址、端口、远程访问和账号密码")
+            WebDavResult.Failure("无法连接到飞牛 NAS，请检查 FN Connect 是否开启或当前网络是否可用。")
         }
     }
 

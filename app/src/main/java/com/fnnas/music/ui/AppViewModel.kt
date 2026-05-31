@@ -11,6 +11,7 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.fnnas.music.NasMusicApplication
+import com.fnnas.music.data.db.NasConnectionMode
 import com.fnnas.music.data.db.NasServerEntity
 import com.fnnas.music.data.db.PlaylistSummary
 import com.fnnas.music.data.db.TrackEntity
@@ -90,7 +91,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             NasForm(
                 name = server.name,
-                baseUrl = server.baseUrl,
+                mode = server.mode,
+                inputAddress = server.inputAddress.ifBlank { server.resolvedBaseUrl.ifBlank { server.baseUrl } },
                 username = server.username,
                 password = "",
                 musicRootPath = server.musicRootPath,
@@ -128,6 +130,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun testCurrentConnection() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true) }
+            val result = repository.testCurrentConnection()
+            _uiState.update {
+                it.copy(
+                    isBusy = false,
+                    message = result.messageOrSuccess("连接成功"),
+                )
+            }
+        }
+    }
+
     fun saveNas(form: NasForm) {
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true) }
@@ -141,6 +156,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
             if (result is WebDavResult.Success) {
                 openFolder(form.musicRootPath)
+            }
+        }
+    }
+
+    fun deleteBinding() {
+        viewModelScope.launch {
+            repository.deleteBinding()
+            _uiState.update {
+                it.copy(
+                    nasServer = null,
+                    folderItems = emptyList(),
+                    tracks = emptyList(),
+                    favorites = emptyList(),
+                    recent = emptyList(),
+                    selectedTab = MainTab.Library,
+                    message = "已删除 NAS 绑定",
+                )
             }
         }
     }
@@ -412,7 +444,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun WebDavResult.messageOrSuccess(success: String): String = when (this) {
-        is WebDavResult.Success -> success
+        is WebDavResult.Success -> message ?: success
         is WebDavResult.Failure -> message
     }
 

@@ -82,6 +82,9 @@ interface TrackDao {
 
     @Query("DELETE FROM tracks WHERE nasServerId = :nasServerId")
     suspend fun deleteAllForNas(nasServerId: Long)
+
+    @Query("DELETE FROM tracks")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -130,6 +133,9 @@ interface PlaylistDao {
 interface PlayHistoryDao {
     @Insert
     suspend fun insert(entity: PlayHistoryEntity)
+
+    @Query("DELETE FROM play_history")
+    suspend fun clear()
 }
 
 @Dao

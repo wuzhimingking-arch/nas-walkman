@@ -5,11 +5,20 @@ import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
+enum class NasConnectionMode {
+    FN_CONNECT,
+    REMOTE_URL,
+    WEBDAV_ADVANCED,
+}
+
 @Entity(tableName = "nas_servers")
 data class NasServerEntity(
     @PrimaryKey val id: Long = 1L,
     val name: String,
     val baseUrl: String,
+    val mode: NasConnectionMode = NasConnectionMode.FN_CONNECT,
+    val inputAddress: String = baseUrl,
+    val resolvedBaseUrl: String = baseUrl,
     val username: String,
     val encryptedPassword: String,
     val musicRootPath: String,

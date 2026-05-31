@@ -29,7 +29,7 @@ class DatabaseCredentialsProvider(
         nasDao.getActiveNas()?.let { server ->
             NasCredentials(
                 serverId = server.id,
-                baseUrl = server.baseUrl,
+                baseUrl = server.resolvedBaseUrl.ifBlank { server.baseUrl },
                 username = server.username,
                 password = credentialCipher.decrypt(server.encryptedPassword),
                 musicRootPath = server.musicRootPath,
