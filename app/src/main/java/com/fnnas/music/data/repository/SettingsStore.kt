@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.map
 private val Context.settingsDataStore by preferencesDataStore(name = "app_settings")
 
 data class AppSettings(
-    val cacheLimitBytes: Long = 1024L * 1024L * 1024L,
+    val cacheLimitBytes: Long = 5L * 1024L * 1024L * 1024L,
     val allowMobileCache: Boolean = false,
     val autoConnectOnStart: Boolean = true,
     val autoScanOnStart: Boolean = false,
@@ -23,7 +23,7 @@ data class AppSettings(
 class SettingsStore(private val context: Context) {
     val settings: Flow<AppSettings> = context.settingsDataStore.data.map { prefs ->
         AppSettings(
-            cacheLimitBytes = prefs[CACHE_LIMIT_BYTES] ?: 1024L * 1024L * 1024L,
+            cacheLimitBytes = prefs[CACHE_LIMIT_BYTES] ?: 5L * 1024L * 1024L * 1024L,
             allowMobileCache = prefs[ALLOW_MOBILE_CACHE] ?: false,
             autoConnectOnStart = prefs[AUTO_CONNECT] ?: true,
             autoScanOnStart = prefs[AUTO_SCAN] ?: false,

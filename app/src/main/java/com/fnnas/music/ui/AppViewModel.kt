@@ -72,6 +72,8 @@ data class AppUiState(
     val message: String? = null,
     val currentTrackId: String? = null,
     val isPlaying: Boolean = false,
+    val isShuffleEnabled: Boolean = false,
+    val repeatMode: Int = Player.REPEAT_MODE_OFF,
     val playbackPositionMs: Long = 0L,
     val playbackDurationMs: Long = 0L,
     val cacheBytes: Long = 0L,
@@ -403,6 +405,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         controller?.seekToPreviousMediaItem()
     }
 
+    fun toggleShuffle() {
+        val player = controller ?: return
+        player.shuffleModeEnabled = !player.shuffleModeEnabled
+        refreshPlaybackState()
+    }
+
+    fun cycleRepeatMode() {
+        val player = controller ?: return
+        player.repeatMode = when (player.repeatMode) {
+            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+            Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+            else -> Player.REPEAT_MODE_OFF
+        }
+        refreshPlaybackState()
+    }
+
     fun seekTo(positionMs: Long) {
         controller?.seekTo(positionMs)
         refreshPlaybackState()
@@ -547,6 +565,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update {
             it.copy(
                 isPlaying = player.isPlaying,
+                isShuffleEnabled = player.shuffleModeEnabled,
+                repeatMode = player.repeatMode,
                 currentTrackId = player.currentMediaItem?.mediaId ?: it.currentTrackId,
                 playbackPositionMs = player.currentPosition.coerceAtLeast(0L),
                 playbackDurationMs = duration,

@@ -6,6 +6,9 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.core.app.ActivityCompat
 import com.fnnas.music.ui.AppViewModel
 import com.fnnas.music.ui.MusicApp
@@ -18,7 +21,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         requestNotificationPermission()
         setContent {
-            FnNasMusicTheme {
+            val state by viewModel.uiState.collectAsState()
+            val systemDark = isSystemInDarkTheme()
+            val darkTheme = when (state.settings.themeMode) {
+                "light" -> false
+                "dark" -> true
+                else -> systemDark
+            }
+            FnNasMusicTheme(darkTheme = darkTheme) {
                 MusicApp(viewModel)
             }
         }

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -23,24 +24,32 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.HelpOutline
+import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.material.icons.automirrored.rounded.Sort
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Cast
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PlayCircle
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
-import androidx.compose.material.icons.rounded.Visibility
-import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -62,12 +71,14 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -78,16 +89,37 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.media3.common.Player
 import com.fnnas.music.data.db.NasConnectionMode
 import com.fnnas.music.data.db.PlaylistSummary
 import com.fnnas.music.data.db.TrackEntity
 import com.fnnas.music.data.repository.NasForm
 import com.fnnas.music.network.RemoteItem
+import com.fnnas.music.ui.components.AlbumCover
+import com.fnnas.music.ui.components.AppCard
+import com.fnnas.music.ui.components.AppPasswordField
+import com.fnnas.music.ui.components.AppPrimaryButton
+import com.fnnas.music.ui.components.AppSecondaryButton
+import com.fnnas.music.ui.components.AppSectionTitle
+import com.fnnas.music.ui.components.AppTextField
+import com.fnnas.music.ui.components.ConnectionModeSegmentedControl
+import com.fnnas.music.ui.components.EmptyStatePanel
+import com.fnnas.music.ui.components.FavoriteIcon
+import com.fnnas.music.ui.components.MiniPlayerBar
+import com.fnnas.music.ui.components.MusicDirectoryField
+import com.fnnas.music.ui.components.NasStatusPill
+import com.fnnas.music.ui.components.PlayerControlButton
+import com.fnnas.music.ui.components.SecurityHint
+import com.fnnas.music.ui.components.SettingGroupCard
+import com.fnnas.music.ui.components.SettingRow
+import com.fnnas.music.ui.components.SettingSwitchRow
+import com.fnnas.music.ui.components.SoftIconBadge
+import com.fnnas.music.ui.components.TrackListItem
+import com.fnnas.music.ui.theme.AppFavorite
 import kotlin.math.roundToInt
 
 @Composable
@@ -103,9 +135,10 @@ fun MusicApp(viewModel: AppViewModel) {
     }
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            if (state.nasServer != null) {
+            if (state.nasServer != null && state.selectedTab != MainTab.Player && state.selectedTab != MainTab.Settings) {
                 Column {
                     MiniPlayer(state, viewModel)
                     BottomNavigation(state.selectedTab, viewModel::selectTab)
@@ -155,7 +188,10 @@ fun MusicApp(viewModel: AppViewModel) {
 
 @Composable
 private fun BottomNavigation(selected: MainTab, onSelected: (MainTab) -> Unit) {
-    NavigationBar {
+    NavigationBar(
+        containerColor = MaterialTheme.colorScheme.surface,
+        tonalElevation = 0.dp,
+    ) {
         NavigationBarItem(
             selected = selected == MainTab.Library,
             onClick = { onSelected(MainTab.Library) },
@@ -196,9 +232,9 @@ private fun NasBindingScreen(
     onManualPathTest: (String) -> Unit,
     onSave: () -> Unit,
 ) {
-    var showPassword by remember { mutableStateOf(false) }
     var showHelp by remember { mutableStateOf(false) }
     var showManualPath by remember { mutableStateOf(false) }
+    var attemptedSubmit by remember { mutableStateOf(false) }
 
     if (showHelp) {
         FnIdHelpDialog(onDismiss = { showHelp = false })
@@ -216,15 +252,39 @@ private fun NasBindingScreen(
         )
     }
 
+    val directoryDisplay = form.selectedMusicDisplayPath
+        .ifBlank { form.selectedMusicRemotePath }
+        .ifBlank { form.musicRootPath }
+    val nameError = if (attemptedSubmit && form.name.isBlank()) "请填写 NAS 名称" else null
+    val addressError = if (attemptedSubmit && form.inputAddress.isBlank()) {
+        when (form.mode) {
+            NasConnectionMode.FN_CONNECT -> "请填写 FN ID 或远程访问地址"
+            NasConnectionMode.REMOTE_URL -> "请填写远程访问地址"
+            NasConnectionMode.WEBDAV_ADVANCED -> "请填写 WebDAV 地址"
+        }
+    } else {
+        null
+    }
+    val userError = if (attemptedSubmit && form.username.isBlank()) "请填写用户名" else null
+    val passwordError = if (attemptedSubmit && form.password.isBlank()) "请填写密码" else null
+    val directoryError = if (attemptedSubmit && directoryDisplay.isBlank()) "请先测试连接并选择音乐目录，或手动填写 /Music" else null
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+            .background(MaterialTheme.colorScheme.background)
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item { Spacer(Modifier.height(16.dp)) }
+        item { Spacer(Modifier.height(18.dp)) }
+        item { ConnectionHeroIllustration() }
         item {
-            Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Text(
+                title,
+                modifier = Modifier.fillMaxWidth(),
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+            )
             Text(
                 "通过 FN Connect 远程播放家里 NAS 中的音乐",
                 style = MaterialTheme.typography.bodyMedium,
@@ -232,155 +292,226 @@ private fun NasBindingScreen(
             )
         }
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(8.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            ) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("连接方式", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    ConnectionModeSelector(
-                        selected = form.mode,
-                        onSelected = { onFormChange(form.copy(mode = it)) },
-                    )
-                    Text(
-                        connectionModeDescription(form.mode),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            }
+            ConnectionModeSegmentedControl(
+                selected = form.mode,
+                onSelected = { onFormChange(form.copy(mode = it)) },
+            )
+            Text(
+                connectionModeDescription(form.mode),
+                modifier = Modifier.padding(top = 8.dp, start = 4.dp, end = 4.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(8.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            ) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    SectionHeader("连接信息") {
-                        if (form.mode == NasConnectionMode.FN_CONNECT) {
-                            TextButton(onClick = { showHelp = true }) {
-                                Icon(Icons.AutoMirrored.Rounded.HelpOutline, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("哪里找 FN ID？")
-                            }
-                        }
-                    }
-                    OutlinedTextField(
-                        value = form.name,
-                        onValueChange = { onFormChange(form.copy(name = it)) },
-                        label = { Text("NAS 名称") },
-                        placeholder = { Text("家里的飞牛") },
-                        singleLine = true,
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                AppTextField(
+                    value = form.name,
+                    onValueChange = { onFormChange(form.copy(name = it)) },
+                    placeholder = "NAS 名称",
+                    leadingIcon = Icons.Rounded.Home,
+                    error = nameError,
+                )
+                AppTextField(
+                    value = form.inputAddress,
+                    onValueChange = { onFormChange(form.copy(inputAddress = it)) },
+                    placeholder = addressPlaceholder(form.mode),
+                    leadingIcon = Icons.Rounded.Link,
+                    error = addressError,
+                )
+                if (form.mode == NasConnectionMode.FN_CONNECT) {
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                    )
-                    OutlinedTextField(
-                        value = form.inputAddress,
-                        onValueChange = { onFormChange(form.copy(inputAddress = it)) },
-                        label = { Text(addressLabel(form.mode)) },
-                        placeholder = { Text(addressPlaceholder(form.mode)) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    if (form.mode == NasConnectionMode.FN_CONNECT &&
-                        form.inputAddress.isNotBlank() &&
-                        !form.inputAddress.startsWith("http", ignoreCase = true)
+                        horizontalArrangement = Arrangement.End,
                     ) {
                         Text(
-                            "如果你在飞牛 fnOS 中开启了 FN Connect，可以直接填写 FN ID；自动连接失败时，请改填完整远程访问地址。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            "哪里找 FN ID？",
+                            modifier = Modifier
+                                .clickable { showHelp = true }
+                                .padding(end = 4.dp, top = 2.dp, bottom = 2.dp),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
                         )
                     }
-                    if (form.inputAddress.startsWith("http://", ignoreCase = true)) {
-                        Text(
-                            "HTTP 连接未加密，建议使用 HTTPS。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.secondary,
-                        )
-                    }
-                    OutlinedTextField(
-                        value = form.username,
-                        onValueChange = { onFormChange(form.copy(username = it)) },
-                        label = { Text("飞牛 NAS 用户名") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    OutlinedTextField(
-                        value = form.password,
-                        onValueChange = { onFormChange(form.copy(password = it)) },
-                        label = { Text("飞牛 NAS 密码") },
-                        singleLine = true,
-                        visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-                        trailingIcon = {
-                            IconButton(onClick = { showPassword = !showPassword }) {
-                                Icon(
-                                    if (showPassword) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
-                                    contentDescription = if (showPassword) "隐藏密码" else "显示密码",
-                                )
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    MusicDirectorySelectorRow(
-                        form = form,
-                        canChooseDirectory = canChooseDirectory,
-                        onClick = onOpenDirectoryPicker,
-                    )
-                    TextButton(onClick = { showManualPath = true }) {
-                        Text("高级：手动填写路径")
-                    }
-                    SettingSwitch(
-                        title = "仅 Wi-Fi 下自动扫描",
-                        checked = form.autoScanWifiOnly,
-                        onCheckedChange = { onFormChange(form.copy(autoScanWifiOnly = it)) },
-                    )
-                    SettingSwitch(
-                        title = "允许移动网络播放",
-                        checked = form.allowMobilePlayback,
-                        onCheckedChange = { onFormChange(form.copy(allowMobilePlayback = it)) },
+                }
+                if (form.mode == NasConnectionMode.FN_CONNECT &&
+                    form.inputAddress.isNotBlank() &&
+                    !form.inputAddress.startsWith("http", ignoreCase = true)
+                ) {
+                    Text(
+                        "如果自动连接失败，请改填完整远程访问地址。",
+                        modifier = Modifier.padding(horizontal = 4.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                if (form.inputAddress.startsWith("http://", ignoreCase = true)) {
+                    Text(
+                        "HTTP 连接未加密，建议使用 HTTPS。",
+                        modifier = Modifier.padding(horizontal = 4.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                }
+                AppTextField(
+                    value = form.username,
+                    onValueChange = { onFormChange(form.copy(username = it)) },
+                    placeholder = "用户名",
+                    leadingIcon = Icons.Rounded.Person,
+                    error = userError,
+                )
+                AppPasswordField(
+                    value = form.password,
+                    onValueChange = { onFormChange(form.copy(password = it)) },
+                    placeholder = "密码",
+                    error = passwordError,
+                )
+                MusicDirectoryField(
+                    value = directoryDisplay,
+                    enabled = canChooseDirectory,
+                    onClick = onOpenDirectoryPicker,
+                )
+                if (directoryError != null) {
+                    Text(
+                        directoryError,
+                        modifier = Modifier.padding(start = 4.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                } else if (!canChooseDirectory) {
+                    Text(
+                        "测试连接成功后可选择音乐目录，也可以手动填写路径。",
+                        modifier = Modifier.padding(start = 4.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    "高级：手动填写路径",
+                    modifier = Modifier
+                        .clickable { showManualPath = true }
+                        .padding(start = 4.dp, top = 4.dp, bottom = 4.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
             }
         }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(
-                    onClick = onTest,
+                AppSecondaryButton(
+                    text = "测试连接",
+                    onClick = {
+                        attemptedSubmit = true
+                        onTest()
+                    },
                     enabled = !isBusy,
                     modifier = Modifier.weight(1f),
-                ) {
-                    Text("测试连接")
-                }
-                OutlinedButton(
-                    onClick = onOpenDirectoryPicker,
-                    enabled = !isBusy && canChooseDirectory,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text("选择音乐目录")
-                }
-                Button(
-                    onClick = onSave,
+                )
+                AppPrimaryButton(
+                    text = "保存并进入音乐库",
+                    onClick = {
+                        attemptedSubmit = true
+                        onSave()
+                    },
                     enabled = !isBusy,
+                    isLoading = isBusy,
                     modifier = Modifier.weight(1f),
-                ) {
-                    if (isBusy) {
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text("保存")
-                    }
-                }
+                )
             }
         }
         item {
-            Text(
-                "App 只读取音乐文件，不会上传、删除或修改 NAS 文件。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            SecurityHint("App 只读取音乐文件，不会修改 NAS 文件")
         }
         item { Spacer(Modifier.height(24.dp)) }
+    }
+}
+
+@Composable
+private fun ConnectionHeroIllustration() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(150.dp)
+            .clip(RoundedCornerShape(28.dp))
+            .background(
+                Brush.linearGradient(
+                    listOf(
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
+                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f),
+                        MaterialTheme.colorScheme.surface,
+                    ),
+                ),
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(width = 92.dp, height = 74.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Rounded.Home,
+                    contentDescription = null,
+                    modifier = Modifier.size(42.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(
+                    modifier = Modifier
+                        .width(48.dp)
+                        .height(2.dp)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.30f)),
+                )
+                Spacer(Modifier.height(8.dp))
+                Icon(
+                    Icons.Rounded.MusicNote,
+                    contentDescription = null,
+                    modifier = Modifier.size(28.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .size(width = 88.dp, height = 64.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.86f)),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .padding(start = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    repeat(3) {
+                        Box(
+                            modifier = Modifier
+                                .width(40.dp)
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.22f)),
+                        )
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 12.dp)
+                        .size(9.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary),
+                )
+            }
+        }
     }
 }
 
@@ -595,23 +726,7 @@ private fun ConnectionModeSelector(
     selected: NasConnectionMode,
     onSelected: (NasConnectionMode) -> Unit,
 ) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        FilterChip(
-            selected = selected == NasConnectionMode.FN_CONNECT,
-            onClick = { onSelected(NasConnectionMode.FN_CONNECT) },
-            label = { Text("FN Connect") },
-        )
-        FilterChip(
-            selected = selected == NasConnectionMode.REMOTE_URL,
-            onClick = { onSelected(NasConnectionMode.REMOTE_URL) },
-            label = { Text("远程地址") },
-        )
-        FilterChip(
-            selected = selected == NasConnectionMode.WEBDAV_ADVANCED,
-            onClick = { onSelected(NasConnectionMode.WEBDAV_ADVANCED) },
-            label = { Text("WebDAV 高级") },
-        )
-    }
+    ConnectionModeSegmentedControl(selected = selected, onSelected = onSelected)
 }
 
 @Composable
@@ -667,17 +782,17 @@ private fun connectionModeLabel(mode: NasConnectionMode): String = when (mode) {
 private fun LibraryScreen(state: AppUiState, viewModel: AppViewModel) {
     var showPlaylistDialog by remember { mutableStateOf(false) }
     var playlistName by remember { mutableStateOf("") }
+    var showSearch by remember { mutableStateOf(false) }
 
     if (showPlaylistDialog) {
         AlertDialog(
             onDismissRequest = { showPlaylistDialog = false },
             title = { Text("新建歌单") },
             text = {
-                OutlinedTextField(
+                AppTextField(
                     value = playlistName,
                     onValueChange = { playlistName = it },
-                    label = { Text("歌单名称") },
-                    singleLine = true,
+                    placeholder = "歌单名称",
                 )
             },
             confirmButton = {
@@ -692,10 +807,18 @@ private fun LibraryScreen(state: AppUiState, viewModel: AppViewModel) {
     }
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                title = { Text("音乐库") },
+                title = { Text("音乐库", fontWeight = FontWeight.Bold) },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background,
+                    titleContentColor = MaterialTheme.colorScheme.onBackground,
+                ),
                 actions = {
+                    IconButton(onClick = { showSearch = !showSearch }) {
+                        Icon(Icons.Rounded.Search, contentDescription = "搜索")
+                    }
                     IconButton(onClick = { viewModel.scanLibrary() }) {
                         Icon(Icons.Rounded.Refresh, contentDescription = "扫描音乐库")
                     }
@@ -714,28 +837,32 @@ private fun LibraryScreen(state: AppUiState, viewModel: AppViewModel) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
-                NasStatus(state)
+                NasStatusPill(
+                    serverName = state.nasServer?.name ?: "家里的飞牛",
+                    onClick = { viewModel.selectTab(MainTab.Settings) },
+                )
                 if (state.scanProgress.isRunning) {
                     Spacer(Modifier.height(8.dp))
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    Text(
-                        "正在扫描 ${state.scanProgress.currentFolder}，已发现 ${state.scanProgress.discovered} 首歌曲",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    AppCard {
+                        Text("正在扫描音乐库", style = MaterialTheme.typography.titleSmall)
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Text(
+                            "已发现 ${state.scanProgress.discovered} 首歌曲",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
-            item {
-                OutlinedTextField(
-                    value = state.searchQuery,
-                    onValueChange = viewModel::setSearchQuery,
-                    leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
-                    label = { Text("搜索歌曲、歌手、专辑或路径") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+            if (showSearch || state.searchQuery.isNotBlank()) {
+                item {
+                    AppTextField(
+                        value = state.searchQuery,
+                        onValueChange = viewModel::setSearchQuery,
+                        placeholder = "搜索歌曲、歌手、专辑或路径",
+                        leadingIcon = Icons.Rounded.Search,
+                    )
+                }
             }
             if (state.searchQuery.isNotBlank()) {
                 trackSection(
@@ -747,16 +874,35 @@ private fun LibraryScreen(state: AppUiState, viewModel: AppViewModel) {
                 )
             } else {
                 item {
-                    SectionHeader("我的歌单") {
+                    RecentPlaybackCard(state.recent, onClick = { })
+                }
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                        LibraryMetricCard(
+                            icon = Icons.Rounded.Favorite,
+                            iconTint = AppFavorite,
+                            title = "收藏歌曲",
+                            value = "${state.favorites.size} 首",
+                            onClick = { },
+                        )
+                        LibraryMetricCard(
+                            icon = Icons.Rounded.MusicNote,
+                            iconTint = MaterialTheme.colorScheme.primary,
+                            title = "全部歌曲",
+                            value = "${state.tracks.size} 首",
+                            onClick = { },
+                        )
+                    }
+                }
+                item {
+                    AppSectionTitle("我的歌单") {
                         TextButton(onClick = { showPlaylistDialog = true }) {
                             Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(4.dp))
                             Text("新建")
                         }
                     }
-                    if (state.playlists.isEmpty()) {
-                        EmptyCard("还没有歌单，可先创建一个本地歌单。")
-                    } else {
+                    if (state.playlists.isNotEmpty()) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             state.playlists.take(3).forEach { playlist ->
                                 AssistChip(
@@ -767,11 +913,78 @@ private fun LibraryScreen(state: AppUiState, viewModel: AppViewModel) {
                         }
                     }
                 }
-                trackSection("最近播放", state.recent, "还没有播放记录", state, viewModel)
-                trackSection("收藏歌曲", state.favorites, "还没有收藏歌曲", state, viewModel)
                 trackSection("全部歌曲", state.tracks, "请先扫描音乐库", state, viewModel)
             }
-            item { Spacer(Modifier.height(18.dp)) }
+            item { Spacer(Modifier.height(96.dp)) }
+        }
+    }
+}
+
+@Composable
+private fun RecentPlaybackCard(tracks: List<TrackEntity>, onClick: () -> Unit) {
+    AppCard(modifier = Modifier.clickable(onClick = onClick)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SoftIconBadge(
+                icon = Icons.Rounded.LibraryMusic,
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                "最近播放",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Icon(
+                Icons.Rounded.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val coverCount = if (tracks.isEmpty()) 5 else tracks.take(5).size
+            repeat(coverCount) {
+                AlbumCover(
+                    modifier = Modifier.size(52.dp),
+                    cornerRadius = 10.dp,
+                    iconSize = 22.dp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RowScope.LibraryMetricCard(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    iconTint: androidx.compose.ui.graphics.Color,
+    title: String,
+    value: String,
+    onClick: () -> Unit,
+) {
+    AppCard(
+        modifier = Modifier
+            .weight(1f)
+            .clickable(onClick = onClick),
+        contentPadding = 14.dp,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SoftIconBadge(icon = icon, tint = iconTint)
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleSmall)
+                Text(
+                    value,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Icon(
+                Icons.Rounded.ChevronRight,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -783,14 +996,44 @@ private fun androidx.compose.foundation.lazy.LazyListScope.trackSection(
     state: AppUiState,
     viewModel: AppViewModel,
 ) {
-    item { SectionHeader(title) }
+    item {
+        AppSectionTitle(title) {
+            if (title == "全部歌曲") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.AutoMirrored.Rounded.Sort,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "排序",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
     if (tracks.isEmpty()) {
-        item { EmptyCard(emptyText) }
+        item {
+            EmptyStatePanel(
+                title = if (state.scanProgress.isRunning) {
+                    "正在扫描音乐库\n已发现 ${state.scanProgress.discovered} 首歌曲"
+                } else {
+                    "当前目录没有发现音乐文件"
+                },
+                actionText = if (state.scanProgress.isRunning) null else "重新扫描",
+                onAction = if (state.scanProgress.isRunning) null else viewModel::scanLibrary,
+            )
+        }
     } else {
-        items(tracks.take(30), key = { it.id }) { track ->
+        items(tracks.take(60), key = { it.id }) { track ->
             TrackRow(
                 track = track,
                 playlists = state.playlists,
+                isCurrent = state.currentTrackId == track.id,
                 onPlay = { viewModel.playTrack(track, tracks) },
                 onFavorite = { viewModel.toggleFavorite(track) },
                 onCache = { viewModel.cacheTrack(track) },
@@ -848,130 +1091,248 @@ private fun FolderScreen(state: AppUiState, viewModel: AppViewModel) {
 @Composable
 private fun PlayerScreen(state: AppUiState, viewModel: AppViewModel) {
     val track = state.currentTrack
-    Column(
+    LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+            .background(MaterialTheme.colorScheme.background)
+            .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
-        Spacer(Modifier.height(12.dp))
-        Box(
-            modifier = Modifier
-                .fillMaxWidth(0.78f)
-                .aspectRatio(1f)
-                .clip(RoundedCornerShape(24.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                Icons.Rounded.MusicNote,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(96.dp),
-            )
-        }
-        Text(
-            track?.title ?: "还没有播放歌曲",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Text(
-            track?.artist ?: "从音乐库或文件夹选择一首歌",
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        PlaybackProgress(state, onSeek = viewModel::seekTo)
-        Row(horizontalArrangement = Arrangement.spacedBy(18.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = viewModel::previous, modifier = Modifier.size(54.dp)) {
-                Icon(Icons.Rounded.SkipPrevious, contentDescription = "上一首", modifier = Modifier.size(34.dp))
-            }
-            IconButton(
-                onClick = viewModel::togglePlayback,
-                modifier = Modifier
-                    .size(72.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary),
+        item { Spacer(Modifier.height(6.dp)) }
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    if (state.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                    contentDescription = if (state.isPlaying) "暂停" else "播放",
-                    tint = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.size(42.dp),
+                IconButton(onClick = { viewModel.selectTab(MainTab.Library) }) {
+                    Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = "返回音乐库")
+                }
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = { }) {
+                    Icon(Icons.Rounded.Cast, contentDescription = "投放设备")
+                }
+                IconButton(onClick = { }) {
+                    Icon(Icons.Rounded.MoreVert, contentDescription = "更多")
+                }
+            }
+        }
+        item {
+            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                AlbumCover(
+                    modifier = Modifier
+                        .fillMaxWidth(0.84f)
+                        .aspectRatio(1f),
+                    cornerRadius = 24.dp,
+                    iconSize = 92.dp,
                 )
             }
-            IconButton(onClick = viewModel::next, modifier = Modifier.size(54.dp)) {
-                Icon(Icons.Rounded.SkipNext, contentDescription = "下一首", modifier = Modifier.size(34.dp))
-            }
         }
-        if (track != null) {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = { viewModel.toggleFavorite(track) }) {
-                    Icon(
-                        if (track.isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        track?.title ?: "还没有播放歌曲",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
                     )
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (track.isFavorite) "已收藏" else "收藏")
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        track?.artist ?: "从音乐库或文件夹选择一首歌",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        QualityChip("NAS")
+                        QualityChip(if (track?.localCachePath != null) "已缓存" else "远程播放")
+                    }
                 }
-                OutlinedButton(onClick = { viewModel.cacheTrack(track) }) {
-                    Icon(Icons.Rounded.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (track.localCachePath != null) "已缓存" else "缓存")
+                if (track != null) {
+                    IconButton(onClick = { viewModel.toggleFavorite(track) }) {
+                        FavoriteIcon(isFavorite = track.isFavorite, modifier = Modifier.size(28.dp))
+                    }
                 }
             }
         }
+        item {
+            PlaybackProgress(state, onSeek = viewModel::seekTo)
+        }
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                PlayerControlButton(
+                    icon = Icons.Rounded.Shuffle,
+                    contentDescription = "随机播放",
+                    onClick = viewModel::toggleShuffle,
+                    selected = state.isShuffleEnabled,
+                )
+                PlayerControlButton(
+                    icon = Icons.Rounded.SkipPrevious,
+                    contentDescription = "上一首",
+                    onClick = viewModel::previous,
+                )
+                PlayerControlButton(
+                    icon = if (state.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                    contentDescription = if (state.isPlaying) "暂停" else "播放",
+                    onClick = viewModel::togglePlayback,
+                    large = true,
+                )
+                PlayerControlButton(
+                    icon = Icons.Rounded.SkipNext,
+                    contentDescription = "下一首",
+                    onClick = viewModel::next,
+                )
+                PlayerControlButton(
+                    icon = Icons.Rounded.Repeat,
+                    contentDescription = "循环播放",
+                    onClick = viewModel::cycleRepeatMode,
+                    selected = state.repeatMode != Player.REPEAT_MODE_OFF,
+                )
+            }
+        }
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                PlayerControlButton(
+                    icon = if (track?.isFavorite == true) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                    contentDescription = "收藏",
+                    label = "收藏",
+                    selected = track?.isFavorite == true,
+                    onClick = { track?.let(viewModel::toggleFavorite) },
+                    modifier = Modifier.weight(1f),
+                )
+                PlayerControlButton(
+                    icon = Icons.AutoMirrored.Rounded.QueueMusic,
+                    contentDescription = "播放列表",
+                    label = "播放列表",
+                    onClick = { viewModel.selectTab(MainTab.Library) },
+                    modifier = Modifier.weight(1f),
+                )
+                PlayerControlButton(
+                    icon = Icons.Rounded.Repeat,
+                    contentDescription = "重复播放",
+                    label = "重复播放",
+                    selected = state.repeatMode != Player.REPEAT_MODE_OFF,
+                    onClick = viewModel::cycleRepeatMode,
+                    modifier = Modifier.weight(1f),
+                )
+                PlayerControlButton(
+                    icon = Icons.Rounded.Shuffle,
+                    contentDescription = "随机播放",
+                    label = "随机播放",
+                    selected = state.isShuffleEnabled,
+                    onClick = viewModel::toggleShuffle,
+                    modifier = Modifier.weight(1f),
+                )
+                PlayerControlButton(
+                    icon = Icons.Rounded.CloudDownload,
+                    contentDescription = "缓存",
+                    label = "缓存",
+                    selected = track?.localCachePath != null,
+                    onClick = { track?.let(viewModel::cacheTrack) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+        item { Spacer(Modifier.height(24.dp)) }
+    }
+}
+
+@Composable
+private fun QualityChip(text: String) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.primaryContainer)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onPrimaryContainer,
+        )
     }
 }
 
 @Composable
 private fun SettingsScreen(state: AppUiState, viewModel: AppViewModel) {
     var showConnectionEditor by remember { mutableStateOf(false) }
+    val server = state.nasServer
+    val musicDirectory = server?.selectedMusicDisplayPath
+        ?.ifBlank { server.selectedMusicRemotePath.ifBlank { server.musicRootPath } }
+        ?: "/Music"
 
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+            .background(MaterialTheme.colorScheme.background)
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item { Text("设置", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold) }
         item {
-            SettingsCard("连接设置") {
-                val server = state.nasServer
-                SettingInfoRow("当前连接方式", server?.let { connectionModeLabel(it.mode) } ?: "未连接")
-                SettingInfoRow("NAS 名称", server?.name ?: "未连接 NAS")
-                SettingInfoRow("FN ID / 远程访问地址", server?.inputAddress?.ifBlank { server.resolvedBaseUrl } ?: "先连接你的飞牛 NAS")
-                SettingInfoRow(
-                    "音乐目录",
-                    server?.selectedMusicDisplayPath
-                        ?.ifBlank { server.selectedMusicRemotePath.ifBlank { server.musicRootPath } }
-                        ?: "未选择",
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    OutlinedButton(
-                        onClick = viewModel::testCurrentConnection,
-                        enabled = !state.isBusy && server != null,
-                        modifier = Modifier.weight(1f),
-                    ) { Text("测试连接") }
-                    Button(
-                        onClick = { showConnectionEditor = !showConnectionEditor },
-                        enabled = !state.isBusy,
-                        modifier = Modifier.weight(1f),
-                    ) { Text(if (showConnectionEditor) "收起" else "修改连接") }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = { viewModel.selectTab(MainTab.Library) }) {
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回")
                 }
-                OutlinedButton(
+                Text("设置", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            }
+        }
+        item {
+            SettingGroupCard("连接设置") {
+                SettingRow(
+                    title = "连接方式",
+                    value = server?.let { connectionModeLabel(it.mode) } ?: "未连接",
+                    onClick = { showConnectionEditor = !showConnectionEditor },
+                )
+                SettingRow(
+                    title = "当前 NAS",
+                    value = server?.name ?: "先连接你的飞牛 NAS",
+                    onClick = { showConnectionEditor = !showConnectionEditor },
+                )
+                SettingRow(
+                    title = "音乐目录",
+                    value = musicDirectory,
+                    onClick = viewModel::openDirectoryPicker,
+                )
+                SettingRow(
+                    title = "重新连接",
+                    value = if (state.isBusy) "连接中" else null,
+                    onClick = viewModel::testCurrentConnection,
+                )
+                SettingRow(
+                    title = if (showConnectionEditor) "收起连接编辑" else "修改连接",
+                    onClick = { showConnectionEditor = !showConnectionEditor },
+                )
+                SettingRow(
+                    title = "删除绑定",
                     onClick = viewModel::deleteBinding,
-                    enabled = !state.isBusy && server != null,
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("删除绑定") }
-                if (showConnectionEditor) {
-                    HorizontalDivider()
+                    titleColor = MaterialTheme.colorScheme.error,
+                    showChevron = false,
+                )
+            }
+        }
+        if (showConnectionEditor) {
+            item {
+                AppCard {
                     NasInlineEditor(
                         form = state.connectionForm,
                         isBusy = state.isBusy,
@@ -987,58 +1348,79 @@ private fun SettingsScreen(state: AppUiState, viewModel: AppViewModel) {
             }
         }
         item {
-            SettingsCard("播放设置") {
-                SettingSwitch(
-                    title = "启动时自动连接 NAS",
-                    checked = state.settings.autoConnectOnStart,
-                    onCheckedChange = viewModel::setAutoConnect,
-                )
-                SettingSwitch(
-                    title = "启动时自动扫描",
-                    checked = state.settings.autoScanOnStart,
-                    onCheckedChange = viewModel::setAutoScan,
-                )
-                SettingSwitch(
-                    title = "移动网络允许缓存",
+            SettingGroupCard("播放设置") {
+                SettingSwitchRow(
+                    title = "允许移动网络播放",
+                    subtitle = "将消耗移动数据流量",
                     checked = state.settings.allowMobileCache,
                     onCheckedChange = viewModel::setAllowMobileCache,
                 )
+                SettingSwitchRow(
+                    title = "启动时自动连接",
+                    checked = state.settings.autoConnectOnStart,
+                    onCheckedChange = viewModel::setAutoConnect,
+                )
+                SettingSwitchRow(
+                    title = "启动时自动扫描",
+                    subtitle = "更新音乐库",
+                    checked = state.settings.autoScanOnStart,
+                    onCheckedChange = viewModel::setAutoScan,
+                )
             }
         }
         item {
-            SettingsCard("缓存设置") {
-                Text("当前缓存 ${formatBytes(state.cacheBytes)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    CacheLimitChip("500MB", 500L * 1024 * 1024, state.settings.cacheLimitBytes, viewModel::setCacheLimit)
-                    CacheLimitChip("1GB", 1024L * 1024 * 1024, state.settings.cacheLimitBytes, viewModel::setCacheLimit)
-                    CacheLimitChip("2GB", 2L * 1024 * 1024 * 1024, state.settings.cacheLimitBytes, viewModel::setCacheLimit)
+            SettingGroupCard("缓存设置") {
+                SettingRow(
+                    title = "缓存上限",
+                    value = formatBytes(state.settings.cacheLimitBytes),
+                    showChevron = false,
+                )
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    CacheLimitChip("1 GB", 1024L * 1024 * 1024, state.settings.cacheLimitBytes, viewModel::setCacheLimit)
+                    CacheLimitChip("2 GB", 2L * 1024 * 1024 * 1024, state.settings.cacheLimitBytes, viewModel::setCacheLimit)
+                    CacheLimitChip("5 GB", 5L * 1024 * 1024 * 1024, state.settings.cacheLimitBytes, viewModel::setCacheLimit)
                 }
-                OutlinedButton(onClick = viewModel::clearCache) {
-                    Text("清理全部缓存")
-                }
+                SettingRow(
+                    title = "已使用缓存",
+                    value = formatBytes(state.cacheBytes),
+                    showChevron = false,
+                )
+                SettingRow(
+                    title = "清理缓存",
+                    onClick = viewModel::clearCache,
+                )
             }
         }
         item {
-            SettingsCard("界面设置") {
-                Text("主题")
+            SettingGroupCard("界面设置") {
+                SettingRow(
+                    title = "主题",
+                    value = when (state.settings.themeMode) {
+                        "light" -> "浅色"
+                        "dark" -> "深色"
+                        else -> "跟随系统"
+                    },
+                    showChevron = false,
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ModeChip("跟随系统", "system", state.settings.themeMode, viewModel::setThemeMode)
                     ModeChip("浅色", "light", state.settings.themeMode, viewModel::setThemeMode)
                     ModeChip("深色", "dark", state.settings.themeMode, viewModel::setThemeMode)
                 }
-                Spacer(Modifier.height(10.dp))
-                Text("语言")
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ModeChip("跟随系统", "system", state.settings.language, viewModel::setLanguage)
-                    ModeChip("中文", "zh", state.settings.language, viewModel::setLanguage)
-                    ModeChip("English", "en", state.settings.language, viewModel::setLanguage)
-                }
+                SettingRow(
+                    title = "语言",
+                    value = if (state.settings.language == "en") "English" else "简体中文",
+                    showChevron = false,
+                )
             }
         }
         item {
-            SettingsCard("关于") {
+            AppCard {
                 Text("飞牛音乐", style = MaterialTheme.typography.titleMedium)
-                Text("0.3.0 · 私有 NAS 音乐播放器", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("0.4.0 · 私有 NAS 音乐播放器", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         item { Spacer(Modifier.height(18.dp)) }
@@ -1057,7 +1439,6 @@ private fun NasInlineEditor(
     onManualPathTest: (String) -> Unit,
     onSave: () -> Unit,
 ) {
-    var showPassword by remember { mutableStateOf(false) }
     var showHelp by remember { mutableStateOf(false) }
     var showManualPath by remember { mutableStateOf(false) }
 
@@ -1077,6 +1458,10 @@ private fun NasInlineEditor(
         )
     }
 
+    val directoryDisplay = form.selectedMusicDisplayPath
+        .ifBlank { form.selectedMusicRemotePath }
+        .ifBlank { form.musicRootPath }
+
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("修改连接时需要重新输入密码。", color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("连接方式", fontWeight = FontWeight.SemiBold)
@@ -1084,20 +1469,17 @@ private fun NasInlineEditor(
             selected = form.mode,
             onSelected = { onFormChange(form.copy(mode = it)) },
         )
-        OutlinedTextField(
+        AppTextField(
             value = form.name,
             onValueChange = { onFormChange(form.copy(name = it)) },
-            label = { Text("NAS 名称") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
+            placeholder = "NAS 名称",
+            leadingIcon = Icons.Rounded.Home,
         )
-        OutlinedTextField(
+        AppTextField(
             value = form.inputAddress,
             onValueChange = { onFormChange(form.copy(inputAddress = it)) },
-            label = { Text(addressLabel(form.mode)) },
-            placeholder = { Text(addressPlaceholder(form.mode)) },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
+            placeholder = addressPlaceholder(form.mode),
+            leadingIcon = Icons.Rounded.Link,
         )
         if (form.mode == NasConnectionMode.FN_CONNECT) {
             TextButton(onClick = { showHelp = true }) {
@@ -1113,53 +1495,45 @@ private fun NasInlineEditor(
                 color = MaterialTheme.colorScheme.secondary,
             )
         }
-        OutlinedTextField(
+        AppTextField(
             value = form.username,
             onValueChange = { onFormChange(form.copy(username = it)) },
-            label = { Text("飞牛 NAS 用户名") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
+            placeholder = "用户名",
+            leadingIcon = Icons.Rounded.Person,
         )
-        OutlinedTextField(
+        AppPasswordField(
             value = form.password,
             onValueChange = { onFormChange(form.copy(password = it)) },
-            label = { Text("飞牛 NAS 密码") },
-            singleLine = true,
-            visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-            trailingIcon = {
-                IconButton(onClick = { showPassword = !showPassword }) {
-                    Icon(
-                        if (showPassword) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
-                        contentDescription = if (showPassword) "隐藏密码" else "显示密码",
-                    )
-                }
-            },
-            modifier = Modifier.fillMaxWidth(),
+            placeholder = "密码",
         )
-        MusicDirectorySelectorRow(
-            form = form,
-            canChooseDirectory = canChooseDirectory,
+        MusicDirectoryField(
+            value = directoryDisplay,
+            enabled = canChooseDirectory,
             onClick = onOpenDirectoryPicker,
         )
         TextButton(onClick = { showManualPath = true }) {
             Text("高级：手动填写路径")
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-            OutlinedButton(
+            AppSecondaryButton(
+                text = "测试",
                 onClick = onTest,
                 enabled = !isBusy,
                 modifier = Modifier.weight(1f),
-            ) { Text("测试") }
-            OutlinedButton(
+            )
+            AppSecondaryButton(
+                text = "选择目录",
                 onClick = onOpenDirectoryPicker,
                 enabled = !isBusy && canChooseDirectory,
                 modifier = Modifier.weight(1f),
-            ) { Text("选择目录") }
-            Button(
+            )
+            AppPrimaryButton(
+                text = "保存",
                 onClick = onSave,
                 enabled = !isBusy,
+                isLoading = isBusy,
                 modifier = Modifier.weight(1f),
-            ) { Text("保存") }
+            )
         }
     }
 }
@@ -1168,64 +1542,34 @@ private fun NasInlineEditor(
 private fun TrackRow(
     track: TrackEntity,
     playlists: List<PlaylistSummary>,
+    isCurrent: Boolean,
     onPlay: () -> Unit,
     onFavorite: () -> Unit,
     onCache: () -> Unit,
     onAddToPlaylist: (PlaylistSummary) -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onPlay)
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(46.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(Icons.Rounded.MusicNote, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            }
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
-                Text(
-                    listOfNotNull(track.artist, track.album).joinToString(" · ").ifBlank { track.fileName },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+    Box(modifier = Modifier.fillMaxWidth()) {
+        TrackListItem(
+            title = track.title,
+            subtitle = listOfNotNull(track.artist, track.album).joinToString(" · ").ifBlank { track.fileName },
+            duration = track.durationMs?.takeIf { it > 0L }?.let(::formatDuration) ?: "--:--",
+            isCurrent = isCurrent,
+            onClick = onPlay,
+            onMore = { menuOpen = true },
+        )
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            DropdownMenuItem(text = { Text("播放") }, onClick = { menuOpen = false; onPlay() })
+            DropdownMenuItem(
+                text = { Text(if (track.isFavorite) "取消收藏" else "收藏") },
+                onClick = { menuOpen = false; onFavorite() },
+            )
+            DropdownMenuItem(text = { Text("缓存到本地") }, onClick = { menuOpen = false; onCache() })
+            playlists.forEach { playlist ->
+                DropdownMenuItem(
+                    text = { Text("添加到 ${playlist.name}") },
+                    onClick = { menuOpen = false; onAddToPlaylist(playlist) },
                 )
-            }
-            IconButton(onClick = onFavorite) {
-                Icon(
-                    if (track.isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                    contentDescription = if (track.isFavorite) "取消收藏" else "收藏",
-                )
-            }
-            Box {
-                IconButton(onClick = { menuOpen = true }) {
-                    Icon(Icons.Rounded.MoreVert, contentDescription = "更多")
-                }
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    DropdownMenuItem(text = { Text("播放") }, onClick = { menuOpen = false; onPlay() })
-                    DropdownMenuItem(text = { Text("缓存到本地") }, onClick = { menuOpen = false; onCache() })
-                    playlists.forEach { playlist ->
-                        DropdownMenuItem(
-                            text = { Text("添加到 ${playlist.name}") },
-                            onClick = { menuOpen = false; onAddToPlaylist(playlist) },
-                        )
-                    }
-                }
             }
         }
     }
@@ -1267,25 +1611,21 @@ private fun FolderItemRow(item: RemoteItem, onClick: () -> Unit) {
 @Composable
 private fun MiniPlayer(state: AppUiState, viewModel: AppViewModel) {
     val track = state.currentTrack ?: return
-    SurfaceLike {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { viewModel.selectTab(MainTab.Player) }
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Rounded.MusicNote, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
-                Text(track.artist.orEmpty(), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
-            }
-            IconButton(onClick = viewModel::togglePlayback) {
-                Icon(if (state.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, contentDescription = "播放或暂停")
-            }
-        }
+    val progress = if (state.playbackDurationMs > 0L) {
+        state.playbackPositionMs.toFloat() / state.playbackDurationMs.toFloat()
+    } else {
+        0f
     }
+    MiniPlayerBar(
+        title = track.title,
+        artist = track.artist.orEmpty(),
+        isPlaying = state.isPlaying,
+        progress = progress,
+        onOpen = { viewModel.selectTab(MainTab.Player) },
+        onPlaylist = { viewModel.selectTab(MainTab.Library) },
+        onToggle = viewModel::togglePlayback,
+        onNext = viewModel::next,
+    )
 }
 
 @Composable
@@ -1298,10 +1638,23 @@ private fun PlaybackProgress(state: AppUiState, onSeek: (Long) -> Unit) {
             onValueChange = { onSeek(it.roundToInt().toLong()) },
             valueRange = 0f..duration.coerceAtLeast(1L).toFloat(),
             enabled = duration > 0,
+            colors = SliderDefaults.colors(
+                thumbColor = MaterialTheme.colorScheme.primary,
+                activeTrackColor = MaterialTheme.colorScheme.primary,
+                inactiveTrackColor = MaterialTheme.colorScheme.outlineVariant,
+            ),
         )
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(formatDuration(position), style = MaterialTheme.typography.bodySmall)
-            Text(formatDuration(duration), style = MaterialTheme.typography.bodySmall)
+            Text(
+                formatDuration(position),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                formatDuration(duration),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -1438,7 +1791,7 @@ private fun formatDuration(ms: Long): String {
     val totalSeconds = ms / 1000
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
-    return "$minutes:${seconds.toString().padStart(2, '0')}"
+    return "${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}"
 }
 
 private fun formatBytes(bytes: Long): String {

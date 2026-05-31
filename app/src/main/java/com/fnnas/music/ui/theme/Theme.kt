@@ -7,23 +7,41 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
 private val LightColors = lightColorScheme(
-    primary = Color(0xFF2E6B5F),
+    primary = AppTeal,
     onPrimary = Color.White,
-    secondary = Color(0xFF9A4E45),
-    tertiary = Color(0xFF4D5D8C),
-    background = Color(0xFFF7F9F6),
-    surface = Color(0xFFFFFFFF),
-    surfaceVariant = Color(0xFFE4ECE8),
+    primaryContainer = AppTealSoft,
+    onPrimaryContainer = AppTealDark,
+    secondary = AppBlue,
+    onSecondary = Color.White,
+    tertiary = AppFavorite,
+    onTertiary = Color.White,
+    background = AppBackgroundLight,
+    onBackground = AppTextPrimaryLight,
+    surface = AppSurfaceLight,
+    onSurface = AppTextPrimaryLight,
+    surfaceVariant = Color(0xFFF1F5F5),
+    onSurfaceVariant = AppTextSecondaryLight,
+    outline = Color(0xFFD9E0E2),
+    outlineVariant = AppDividerLight,
+    error = AppDanger,
 )
 
 private val DarkColors = darkColorScheme(
-    primary = Color(0xFF86D5C4),
-    onPrimary = Color(0xFF00382F),
-    secondary = Color(0xFFFFB4A8),
-    tertiary = Color(0xFFBBC7FF),
-    background = Color(0xFF111512),
-    surface = Color(0xFF171C19),
-    surfaceVariant = Color(0xFF3F4945),
+    primary = Color(0xFF39D6C4),
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFF103D38),
+    onPrimaryContainer = Color(0xFFA9F3EA),
+    secondary = Color(0xFF8AB4FF),
+    tertiary = Color(0xFFFF8A98),
+    background = AppBackgroundDark,
+    onBackground = AppTextPrimaryDark,
+    surface = AppSurfaceDark,
+    onSurface = AppTextPrimaryDark,
+    surfaceVariant = AppSurfaceVariantDark,
+    onSurfaceVariant = AppTextSecondaryDark,
+    outline = Color(0xFF38434D),
+    outlineVariant = Color(0xFF26313A),
+    error = Color(0xFFFF8A8A),
 )
 
 @Composable
@@ -33,7 +51,8 @@ fun FnNasMusicTheme(
 ) {
     MaterialTheme(
         colorScheme = if (darkTheme) DarkColors else LightColors,
-        typography = MaterialTheme.typography,
+        typography = AppTypography,
+        shapes = AppShapes,
         content = content,
     )
 }
