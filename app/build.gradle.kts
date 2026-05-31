@@ -4,6 +4,29 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+import java.util.Properties
+
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties()
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.inputStream().use { keystoreProperties.load(it) }
+}
+
+val releaseSigningRequested = gradle.startParameter.taskNames.any { taskName ->
+    taskName.contains("Release", ignoreCase = true)
+}
+
+fun releaseKeystoreProperty(name: String): String {
+    val value = keystoreProperties.getProperty(name)?.trim()
+    if (value.isNullOrBlank()) {
+        throw GradleException(
+            "Release signing requires keystore.properties with '$name'. " +
+                "Copy keystore.properties.example to keystore.properties and keep it out of Git."
+        )
+    }
+    return value
+}
+
 android {
     namespace = "tech.peakedge.naswalkman"
     compileSdk = 36
@@ -16,9 +39,27 @@ android {
         versionName = "0.4.2"
     }
 
+    signingConfigs {
+        if (keystorePropertiesFile.exists() || releaseSigningRequested) {
+            create("release") {
+                val releaseStoreFile = rootProject.file(releaseKeystoreProperty("storeFile"))
+                if (!releaseStoreFile.exists()) {
+                    throw GradleException("Release signing keystore not found: ${releaseStoreFile.absolutePath}")
+                }
+                storeFile = releaseStoreFile
+                storePassword = releaseKeystoreProperty("storePassword")
+                keyAlias = releaseKeystoreProperty("keyAlias")
+                keyPassword = releaseKeystoreProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (keystorePropertiesFile.exists() || releaseSigningRequested) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
