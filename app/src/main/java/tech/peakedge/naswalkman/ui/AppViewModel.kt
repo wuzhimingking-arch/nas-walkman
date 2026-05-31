@@ -2,6 +2,9 @@ package tech.peakedge.naswalkman.ui
 
 import android.app.Application
 import android.content.ComponentName
+import android.os.Bundle
+import android.os.SystemClock
+import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -9,6 +12,8 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
 import androidx.media3.session.SessionToken
 import tech.peakedge.naswalkman.NasMusicApplication
 import tech.peakedge.naswalkman.data.db.NasConnectionMode
@@ -24,6 +29,7 @@ import tech.peakedge.naswalkman.data.repository.ScanProgress
 import tech.peakedge.naswalkman.network.RemoteItem
 import tech.peakedge.naswalkman.network.WebDavResult
 import tech.peakedge.naswalkman.playback.MusicPlaybackService
+import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -32,6 +38,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 enum class MainTab { Library, Folders, Player, Settings }
 
@@ -104,6 +112,34 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
     private var playbackTicker: Job? = null
+    private val playbackCommandMutex = Mutex()
+    private var lastPlaybackCommandAtMs = 0L
+
+    private val controllerListener = object : MediaController.Listener {
+        override fun onDisconnected(controller: MediaController) {
+            if (this@AppViewModel.controller === controller) {
+                this@AppViewModel.controller = null
+            }
+            playbackTicker?.cancel()
+            _uiState.update {
+                it.copy(isPlaying = false, message = "播放器连接已断开")
+            }
+        }
+
+        override fun onCustomCommand(
+            controller: MediaController,
+            command: SessionCommand,
+            args: Bundle,
+        ): ListenableFuture<SessionResult> {
+            if (command.customAction == MusicPlaybackService.ACTION_PLAYBACK_RECOVERY_FAILED) {
+                _uiState.update {
+                    it.copy(message = "播放失败，请检查文件格式或网络连接")
+                }
+                return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+            }
+            return Futures.immediateFuture(SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED))
+        }
+    }
 
     init {
         bindRepositoryFlows()
@@ -340,7 +376,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun playTrack(track: TrackEntity, queue: List<TrackEntity> = _uiState.value.tracks) {
-        viewModelScope.launch {
+        runPlaybackCommand playback@{
             val sourceQueue = queue.takeIf { items -> items.any { it.id == track.id } } ?: listOf(track)
             val mediaItems = sourceQueue.mapNotNull { item ->
                 val uri = repository.mediaUriFor(item) ?: return@mapNotNull null
@@ -360,12 +396,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val items = mediaItems.map { it.second }
             if (items.isEmpty()) {
                 _uiState.update { it.copy(message = "无法播放，请先连接 NAS") }
-                return@launch
+                return@playback
             }
             val player = controller
             if (player == null) {
                 _uiState.update { it.copy(message = "播放器尚未准备好") }
-                return@launch
+                return@playback
             }
             player.setMediaItems(items, startIndex, 0L)
             player.prepare()
@@ -392,38 +428,52 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun togglePlayback() {
-        val player = controller ?: return
-        if (player.isPlaying) player.pause() else player.play()
-        refreshPlaybackState()
+        runPlaybackCommand {
+            val player = controller ?: return@runPlaybackCommand
+            if (player.isPlaying) player.pause() else player.play()
+            refreshPlaybackState()
+        }
     }
 
     fun next() {
-        controller?.seekToNextMediaItem()
+        runPlaybackCommand {
+            controller?.seekToNextMediaItem()
+            refreshPlaybackState()
+        }
     }
 
     fun previous() {
-        controller?.seekToPreviousMediaItem()
+        runPlaybackCommand {
+            controller?.seekToPreviousMediaItem()
+            refreshPlaybackState()
+        }
     }
 
     fun toggleShuffle() {
-        val player = controller ?: return
-        player.shuffleModeEnabled = !player.shuffleModeEnabled
-        refreshPlaybackState()
+        runPlaybackCommand {
+            val player = controller ?: return@runPlaybackCommand
+            player.shuffleModeEnabled = !player.shuffleModeEnabled
+            refreshPlaybackState()
+        }
     }
 
     fun cycleRepeatMode() {
-        val player = controller ?: return
-        player.repeatMode = when (player.repeatMode) {
-            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-            Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
-            else -> Player.REPEAT_MODE_OFF
+        runPlaybackCommand {
+            val player = controller ?: return@runPlaybackCommand
+            player.repeatMode = when (player.repeatMode) {
+                Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                else -> Player.REPEAT_MODE_OFF
+            }
+            refreshPlaybackState()
         }
-        refreshPlaybackState()
     }
 
     fun seekTo(positionMs: Long) {
-        controller?.seekTo(positionMs)
-        refreshPlaybackState()
+        runPlaybackCommand(debounce = false) {
+            controller?.seekTo(positionMs)
+            refreshPlaybackState()
+        }
     }
 
     fun toggleFavorite(track: TrackEntity) {
@@ -524,14 +574,32 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             application,
             ComponentName(application, MusicPlaybackService::class.java),
         )
-        val future = MediaController.Builder(application, token).buildAsync()
+        val future = runCatching {
+            MediaController.Builder(application, token)
+                .setListener(controllerListener)
+                .buildAsync()
+        }.onFailure { error ->
+            Log.e(TAG, "Failed to start MediaController connection", error)
+            controller = null
+            playbackTicker?.cancel()
+            _uiState.update { it.copy(message = "播放器暂时不可用") }
+        }.getOrNull() ?: return
+
         controllerFuture = future
         future.addListener(
             {
-                controller = future.get().also { controller ->
-                    controller.addListener(playerListener)
+                runCatching {
+                    future.get()
+                }.onSuccess { connectedController ->
+                    controller = connectedController
+                    connectedController.addListener(playerListener)
                     refreshPlaybackState()
                     startPlaybackTicker()
+                }.onFailure { error ->
+                    Log.e(TAG, "Failed to connect MediaController", error)
+                    controller = null
+                    playbackTicker?.cancel()
+                    _uiState.update { it.copy(message = "播放器暂时不可用") }
                 }
             },
             ContextCompat.getMainExecutor(application),
@@ -571,6 +639,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 playbackPositionMs = player.currentPosition.coerceAtLeast(0L),
                 playbackDurationMs = duration,
             )
+        }
+    }
+
+    private fun runPlaybackCommand(
+        debounce: Boolean = true,
+        block: suspend () -> Unit,
+    ) {
+        viewModelScope.launch {
+            playbackCommandMutex.withLock {
+                if (debounce) {
+                    val now = SystemClock.elapsedRealtime()
+                    if (now - lastPlaybackCommandAtMs < PLAYBACK_COMMAND_DEBOUNCE_MS) {
+                        return@withLock
+                    }
+                    lastPlaybackCommandAtMs = now
+                }
+                block()
+            }
         }
     }
 
@@ -652,4 +738,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             autoScanWifiOnly = autoScanWifiOnly,
             allowMobilePlayback = allowMobilePlayback,
         )
+
+    companion object {
+        private const val TAG = "AppViewModel"
+        private const val PLAYBACK_COMMAND_DEBOUNCE_MS = 180L
+    }
 }
