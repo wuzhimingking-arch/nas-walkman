@@ -32,7 +32,7 @@ class DatabaseCredentialsProvider(
                 baseUrl = server.resolvedBaseUrl.ifBlank { server.baseUrl },
                 username = server.username,
                 password = credentialCipher.decrypt(server.encryptedPassword),
-                musicRootPath = server.musicRootPath,
+                musicRootPath = server.selectedMusicRemotePath.ifBlank { server.musicRootPath },
             )
         }
     }

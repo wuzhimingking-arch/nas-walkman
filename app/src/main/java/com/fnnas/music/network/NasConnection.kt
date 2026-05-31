@@ -16,6 +16,24 @@ data class ResolvedNasEndpoint(
     val wasFnIdOnly: Boolean = false,
 )
 
+data class NasDirectory(
+    val name: String,
+    val remotePath: String,
+    val displayPath: String,
+    val modifiedAt: String?,
+    val hasPermission: Boolean = true,
+    val canEnter: Boolean = true,
+    val itemCount: Int? = null,
+)
+
+data class NasAudioFile(
+    val name: String,
+    val remotePath: String,
+    val displayPath: String,
+    val size: Long?,
+    val modifiedAt: String?,
+)
+
 interface ConnectionResolver {
     fun resolve(draft: NasConnectionDraft): ResolvedNasEndpoint
 }
@@ -73,6 +91,10 @@ private object UrlResolver {
 interface NasFileClient {
     suspend fun testConnection(credentials: NasCredentials): WebDavResult
     suspend fun listDirectory(credentials: NasCredentials, remotePath: String): List<RemoteItem>
+    suspend fun listDirectories(credentials: NasCredentials, remotePath: String): List<NasDirectory>
+    suspend fun listAudioFiles(credentials: NasCredentials, remotePath: String): List<NasAudioFile>
+    suspend fun testDirectory(credentials: NasCredentials, remotePath: String): WebDavResult
+    fun getDisplayPath(remotePath: String): String
     suspend fun downloadToFile(credentials: NasCredentials, remotePath: String, target: File): Long
     fun urlFor(credentials: NasCredentials, remotePath: String): String
     suspend fun supportsRange(credentials: NasCredentials, remotePath: String): Boolean = true
@@ -84,6 +106,40 @@ class WebDavNasFileClient(private val webDavClient: WebDavClient) : NasFileClien
 
     override suspend fun listDirectory(credentials: NasCredentials, remotePath: String): List<RemoteItem> =
         webDavClient.listDirectory(credentials, remotePath)
+
+    override suspend fun listDirectories(credentials: NasCredentials, remotePath: String): List<NasDirectory> =
+        webDavClient.listDirectory(credentials, remotePath)
+            .filter { it.isDirectory }
+            .map {
+                NasDirectory(
+                    name = it.displayName,
+                    remotePath = it.remotePath,
+                    displayPath = getDisplayPath(it.remotePath),
+                    modifiedAt = it.modifiedAt,
+                )
+            }
+
+    override suspend fun listAudioFiles(credentials: NasCredentials, remotePath: String): List<NasAudioFile> =
+        webDavClient.listDirectory(credentials, remotePath)
+            .filter { it.isSupportedAudio }
+            .map {
+                NasAudioFile(
+                    name = it.displayName,
+                    remotePath = it.remotePath,
+                    displayPath = getDisplayPath(it.remotePath),
+                    size = it.size,
+                    modifiedAt = it.modifiedAt,
+                )
+            }
+
+    override suspend fun testDirectory(credentials: NasCredentials, remotePath: String): WebDavResult =
+        webDavClient.testDirectory(credentials, remotePath)
+
+    override fun getDisplayPath(remotePath: String): String =
+        remotePath.trim('/').split('/')
+            .filter { it.isNotBlank() }
+            .joinToString(" / ")
+            .ifBlank { "NAS 根目录" }
 
     override suspend fun downloadToFile(credentials: NasCredentials, remotePath: String, target: File): Long =
         webDavClient.downloadToFile(credentials, remotePath, target)

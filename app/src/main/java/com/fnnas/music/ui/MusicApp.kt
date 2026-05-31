@@ -118,13 +118,28 @@ fun MusicApp(viewModel: AppViewModel) {
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            if (state.nasServer == null) {
+            if (state.showScanPrompt) {
+                ScanPromptDialog(
+                    directory = state.connectionForm.selectedMusicDisplayPath.ifBlank { state.connectionForm.selectedMusicRemotePath },
+                    onDismiss = viewModel::dismissScanPrompt,
+                    onConfirm = viewModel::confirmScanPrompt,
+                )
+            }
+
+            if (state.directoryPicker.isOpen) {
+                DirectoryPickerScreen(state, viewModel)
+            } else if (state.nasServer == null) {
                 NasBindingScreen(
                     title = "连接飞牛 NAS",
-                    form = viewModel.defaultForm(),
+                    form = state.connectionForm,
                     isBusy = state.isBusy,
-                    onTest = viewModel::testConnection,
-                    onSave = viewModel::saveNas,
+                    canChooseDirectory = state.isConnectionTested,
+                    onFormChange = viewModel::updateConnectionForm,
+                    onTest = { viewModel.testConnection() },
+                    onOpenDirectoryPicker = viewModel::openDirectoryPicker,
+                    onManualPathSave = viewModel::setManualMusicPath,
+                    onManualPathTest = viewModel::testManualMusicPath,
+                    onSave = { viewModel.saveNas() },
                 )
             } else {
                 when (state.selectedTab) {
@@ -173,15 +188,32 @@ private fun NasBindingScreen(
     title: String,
     form: NasForm,
     isBusy: Boolean,
-    onTest: (NasForm) -> Unit,
-    onSave: (NasForm) -> Unit,
+    canChooseDirectory: Boolean,
+    onFormChange: (NasForm) -> Unit,
+    onTest: () -> Unit,
+    onOpenDirectoryPicker: () -> Unit,
+    onManualPathSave: (String) -> Unit,
+    onManualPathTest: (String) -> Unit,
+    onSave: () -> Unit,
 ) {
-    var editing by remember(form.mode, form.inputAddress, form.username, form.musicRootPath) { mutableStateOf(form) }
     var showPassword by remember { mutableStateOf(false) }
     var showHelp by remember { mutableStateOf(false) }
+    var showManualPath by remember { mutableStateOf(false) }
 
     if (showHelp) {
         FnIdHelpDialog(onDismiss = { showHelp = false })
+    }
+    if (showManualPath) {
+        ManualPathDialog(
+            initialPath = form.selectedMusicRemotePath.ifBlank { form.musicRootPath },
+            isBusy = isBusy,
+            onDismiss = { showManualPath = false },
+            onSave = {
+                onManualPathSave(it)
+                showManualPath = false
+            },
+            onTest = onManualPathTest,
+        )
     }
 
     LazyColumn(
@@ -208,11 +240,11 @@ private fun NasBindingScreen(
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("连接方式", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     ConnectionModeSelector(
-                        selected = editing.mode,
-                        onSelected = { editing = editing.copy(mode = it) },
+                        selected = form.mode,
+                        onSelected = { onFormChange(form.copy(mode = it)) },
                     )
                     Text(
-                        connectionModeDescription(editing.mode),
+                        connectionModeDescription(form.mode),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -227,7 +259,7 @@ private fun NasBindingScreen(
             ) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     SectionHeader("连接信息") {
-                        if (editing.mode == NasConnectionMode.FN_CONNECT) {
+                        if (form.mode == NasConnectionMode.FN_CONNECT) {
                             TextButton(onClick = { showHelp = true }) {
                                 Icon(Icons.AutoMirrored.Rounded.HelpOutline, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(4.dp))
@@ -236,24 +268,24 @@ private fun NasBindingScreen(
                         }
                     }
                     OutlinedTextField(
-                        value = editing.name,
-                        onValueChange = { editing = editing.copy(name = it) },
+                        value = form.name,
+                        onValueChange = { onFormChange(form.copy(name = it)) },
                         label = { Text("NAS 名称") },
                         placeholder = { Text("家里的飞牛") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
                     OutlinedTextField(
-                        value = editing.inputAddress,
-                        onValueChange = { editing = editing.copy(inputAddress = it) },
-                        label = { Text(addressLabel(editing.mode)) },
-                        placeholder = { Text(addressPlaceholder(editing.mode)) },
+                        value = form.inputAddress,
+                        onValueChange = { onFormChange(form.copy(inputAddress = it)) },
+                        label = { Text(addressLabel(form.mode)) },
+                        placeholder = { Text(addressPlaceholder(form.mode)) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    if (editing.mode == NasConnectionMode.FN_CONNECT &&
-                        editing.inputAddress.isNotBlank() &&
-                        !editing.inputAddress.startsWith("http", ignoreCase = true)
+                    if (form.mode == NasConnectionMode.FN_CONNECT &&
+                        form.inputAddress.isNotBlank() &&
+                        !form.inputAddress.startsWith("http", ignoreCase = true)
                     ) {
                         Text(
                             "如果你在飞牛 fnOS 中开启了 FN Connect，可以直接填写 FN ID；自动连接失败时，请改填完整远程访问地址。",
@@ -261,7 +293,7 @@ private fun NasBindingScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    if (editing.inputAddress.startsWith("http://", ignoreCase = true)) {
+                    if (form.inputAddress.startsWith("http://", ignoreCase = true)) {
                         Text(
                             "HTTP 连接未加密，建议使用 HTTPS。",
                             style = MaterialTheme.typography.bodySmall,
@@ -269,15 +301,15 @@ private fun NasBindingScreen(
                         )
                     }
                     OutlinedTextField(
-                        value = editing.username,
-                        onValueChange = { editing = editing.copy(username = it) },
+                        value = form.username,
+                        onValueChange = { onFormChange(form.copy(username = it)) },
                         label = { Text("飞牛 NAS 用户名") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
                     OutlinedTextField(
-                        value = editing.password,
-                        onValueChange = { editing = editing.copy(password = it) },
+                        value = form.password,
+                        onValueChange = { onFormChange(form.copy(password = it)) },
                         label = { Text("飞牛 NAS 密码") },
                         singleLine = true,
                         visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
@@ -291,23 +323,23 @@ private fun NasBindingScreen(
                         },
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    OutlinedTextField(
-                        value = editing.musicRootPath,
-                        onValueChange = { editing = editing.copy(musicRootPath = it) },
-                        label = { Text("音乐目录") },
-                        placeholder = { Text("/Music 或 /音乐") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
+                    MusicDirectorySelectorRow(
+                        form = form,
+                        canChooseDirectory = canChooseDirectory,
+                        onClick = onOpenDirectoryPicker,
                     )
+                    TextButton(onClick = { showManualPath = true }) {
+                        Text("高级：手动填写路径")
+                    }
                     SettingSwitch(
                         title = "仅 Wi-Fi 下自动扫描",
-                        checked = editing.autoScanWifiOnly,
-                        onCheckedChange = { editing = editing.copy(autoScanWifiOnly = it) },
+                        checked = form.autoScanWifiOnly,
+                        onCheckedChange = { onFormChange(form.copy(autoScanWifiOnly = it)) },
                     )
                     SettingSwitch(
                         title = "允许移动网络播放",
-                        checked = editing.allowMobilePlayback,
-                        onCheckedChange = { editing = editing.copy(allowMobilePlayback = it) },
+                        checked = form.allowMobilePlayback,
+                        onCheckedChange = { onFormChange(form.copy(allowMobilePlayback = it)) },
                     )
                 }
             }
@@ -315,21 +347,28 @@ private fun NasBindingScreen(
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(
-                    onClick = { onTest(editing) },
+                    onClick = onTest,
                     enabled = !isBusy,
                     modifier = Modifier.weight(1f),
                 ) {
                     Text("测试连接")
                 }
+                OutlinedButton(
+                    onClick = onOpenDirectoryPicker,
+                    enabled = !isBusy && canChooseDirectory,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("选择音乐目录")
+                }
                 Button(
-                    onClick = { onSave(editing) },
+                    onClick = onSave,
                     enabled = !isBusy,
                     modifier = Modifier.weight(1f),
                 ) {
                     if (isBusy) {
                         CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                     } else {
-                        Text("保存并进入")
+                        Text("保存")
                     }
                 }
             }
@@ -342,6 +381,212 @@ private fun NasBindingScreen(
             )
         }
         item { Spacer(Modifier.height(24.dp)) }
+    }
+}
+
+@Composable
+private fun MusicDirectorySelectorRow(
+    form: NasForm,
+    canChooseDirectory: Boolean,
+    onClick: () -> Unit,
+) {
+    val display = form.selectedMusicDisplayPath
+        .ifBlank { form.musicRootPath.takeIf { it.isNotBlank() }?.let { "已手动填写路径：$it" }.orEmpty() }
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = canChooseDirectory, onClick = onClick),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(Icons.Rounded.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Column(modifier = Modifier.weight(1f)) {
+                Text("音乐目录", fontWeight = FontWeight.SemiBold)
+                Text(
+                    display.ifBlank { if (canChooseDirectory) "未选择" else "登录后选择" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Text(">", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun ManualPathDialog(
+    initialPath: String,
+    isBusy: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+    onTest: (String) -> Unit,
+) {
+    var path by remember(initialPath) { mutableStateOf(initialPath) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("高级：手动填写路径") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "仅当你知道 NAS 的真实访问路径时使用。",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = path,
+                    onValueChange = { path = it },
+                    label = { Text("路径") },
+                    placeholder = { Text("/Music") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(path) }, enabled = path.isNotBlank() && !isBusy) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = { onTest(path) }, enabled = path.isNotBlank() && !isBusy) {
+                    Text("测试路径")
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("取消")
+                }
+            }
+        },
+    )
+}
+
+@Composable
+private fun ScanPromptDialog(
+    directory: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("扫描音乐库") },
+        text = {
+            Text("是否现在扫描这个目录中的音乐？\n\n${directory.ifBlank { "已选择的音乐目录" }}")
+        },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("现在扫描") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("稍后") } },
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DirectoryPickerScreen(state: AppUiState, viewModel: AppViewModel) {
+    val picker = state.directoryPicker
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("选择音乐目录") },
+                navigationIcon = {
+                    IconButton(
+                        onClick = {
+                            if (picker.breadcrumbs.size > 1) viewModel.pickerGoUp() else viewModel.closeDirectoryPicker()
+                        },
+                    ) {
+                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = viewModel::refreshDirectoryPicker) {
+                        Icon(Icons.Rounded.Refresh, contentDescription = "刷新")
+                    }
+                },
+            )
+        },
+        bottomBar = {
+            SurfaceLike {
+                Button(
+                    onClick = viewModel::chooseCurrentPickerDirectory,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    enabled = !picker.isLoading,
+                ) {
+                    Text("选择当前文件夹作为音乐目录")
+                }
+            }
+        },
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            item {
+                Text(
+                    "请选择 NAS 中保存歌曲的文件夹",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text("当前 NAS：${state.connectionForm.name.ifBlank { "家里的飞牛" }}")
+                Text(
+                    "当前路径：${picker.current.displayPath}",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (picker.isLoading) {
+                item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+            }
+            if (picker.directories.isEmpty() && !picker.isLoading) {
+                item { EmptyCard("当前目录没有更多文件夹，你也可以选择当前目录作为音乐目录。") }
+            }
+            items(picker.directories, key = { it.remotePath }) { directory ->
+                DirectoryPickerRow(directory = directory, onClick = { viewModel.enterPickerDirectory(directory) })
+            }
+            item { Spacer(Modifier.height(80.dp)) }
+        }
+    }
+}
+
+@Composable
+private fun DirectoryPickerRow(
+    directory: com.fnnas.music.network.NasDirectory,
+    onClick: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(enabled = directory.canEnter, onClick = onClick)
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(Icons.Rounded.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Column(modifier = Modifier.weight(1f)) {
+                Text(directory.name, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                directory.itemCount?.let {
+                    Text(
+                        "包含 $it 个项目",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Text(">", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
@@ -701,7 +946,12 @@ private fun SettingsScreen(state: AppUiState, viewModel: AppViewModel) {
                 SettingInfoRow("当前连接方式", server?.let { connectionModeLabel(it.mode) } ?: "未连接")
                 SettingInfoRow("NAS 名称", server?.name ?: "未连接 NAS")
                 SettingInfoRow("FN ID / 远程访问地址", server?.inputAddress?.ifBlank { server.resolvedBaseUrl } ?: "先连接你的飞牛 NAS")
-                SettingInfoRow("音乐目录", server?.musicRootPath ?: "/Music")
+                SettingInfoRow(
+                    "音乐目录",
+                    server?.selectedMusicDisplayPath
+                        ?.ifBlank { server.selectedMusicRemotePath.ifBlank { server.musicRootPath } }
+                        ?: "未选择",
+                )
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                     OutlinedButton(
@@ -723,10 +973,15 @@ private fun SettingsScreen(state: AppUiState, viewModel: AppViewModel) {
                 if (showConnectionEditor) {
                     HorizontalDivider()
                     NasInlineEditor(
-                        form = viewModel.defaultForm(),
+                        form = state.connectionForm,
                         isBusy = state.isBusy,
-                        onTest = viewModel::testConnection,
-                        onSave = viewModel::saveNas,
+                        canChooseDirectory = state.isConnectionTested || state.nasServer != null,
+                        onFormChange = viewModel::updateConnectionForm,
+                        onTest = { viewModel.testConnection() },
+                        onOpenDirectoryPicker = viewModel::openDirectoryPicker,
+                        onManualPathSave = viewModel::setManualMusicPath,
+                        onManualPathTest = viewModel::testManualMusicPath,
+                        onSave = { viewModel.saveNas() },
                     )
                 }
             }
@@ -783,7 +1038,7 @@ private fun SettingsScreen(state: AppUiState, viewModel: AppViewModel) {
         item {
             SettingsCard("关于") {
                 Text("飞牛音乐", style = MaterialTheme.typography.titleMedium)
-                Text("0.2.0 · 私有 NAS 音乐播放器", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("0.3.0 · 私有 NAS 音乐播放器", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         item { Spacer(Modifier.height(18.dp)) }
@@ -794,47 +1049,64 @@ private fun SettingsScreen(state: AppUiState, viewModel: AppViewModel) {
 private fun NasInlineEditor(
     form: NasForm,
     isBusy: Boolean,
-    onTest: (NasForm) -> Unit,
-    onSave: (NasForm) -> Unit,
+    canChooseDirectory: Boolean,
+    onFormChange: (NasForm) -> Unit,
+    onTest: () -> Unit,
+    onOpenDirectoryPicker: () -> Unit,
+    onManualPathSave: (String) -> Unit,
+    onManualPathTest: (String) -> Unit,
+    onSave: () -> Unit,
 ) {
-    var editing by remember(form.mode, form.inputAddress, form.username, form.musicRootPath) { mutableStateOf(form) }
     var showPassword by remember { mutableStateOf(false) }
     var showHelp by remember { mutableStateOf(false) }
+    var showManualPath by remember { mutableStateOf(false) }
 
     if (showHelp) {
         FnIdHelpDialog(onDismiss = { showHelp = false })
+    }
+    if (showManualPath) {
+        ManualPathDialog(
+            initialPath = form.selectedMusicRemotePath.ifBlank { form.musicRootPath },
+            isBusy = isBusy,
+            onDismiss = { showManualPath = false },
+            onSave = {
+                onManualPathSave(it)
+                showManualPath = false
+            },
+            onTest = onManualPathTest,
+        )
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("修改连接时需要重新输入密码。", color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("连接方式", fontWeight = FontWeight.SemiBold)
         ConnectionModeSelector(
-            selected = editing.mode,
-            onSelected = { editing = editing.copy(mode = it) },
+            selected = form.mode,
+            onSelected = { onFormChange(form.copy(mode = it)) },
         )
         OutlinedTextField(
-            value = editing.name,
-            onValueChange = { editing = editing.copy(name = it) },
+            value = form.name,
+            onValueChange = { onFormChange(form.copy(name = it)) },
             label = { Text("NAS 名称") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
-            value = editing.inputAddress,
-            onValueChange = { editing = editing.copy(inputAddress = it) },
-            label = { Text(addressLabel(editing.mode)) },
-            placeholder = { Text(addressPlaceholder(editing.mode)) },
+            value = form.inputAddress,
+            onValueChange = { onFormChange(form.copy(inputAddress = it)) },
+            label = { Text(addressLabel(form.mode)) },
+            placeholder = { Text(addressPlaceholder(form.mode)) },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
-        if (editing.mode == NasConnectionMode.FN_CONNECT) {
+        if (form.mode == NasConnectionMode.FN_CONNECT) {
             TextButton(onClick = { showHelp = true }) {
                 Icon(Icons.AutoMirrored.Rounded.HelpOutline, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(4.dp))
                 Text("哪里找 FN ID？")
             }
         }
-        if (editing.inputAddress.startsWith("http://", ignoreCase = true)) {
+        if (form.inputAddress.startsWith("http://", ignoreCase = true)) {
             Text(
                 "HTTP 连接未加密，建议使用 HTTPS。",
                 style = MaterialTheme.typography.bodySmall,
@@ -842,15 +1114,15 @@ private fun NasInlineEditor(
             )
         }
         OutlinedTextField(
-            value = editing.username,
-            onValueChange = { editing = editing.copy(username = it) },
+            value = form.username,
+            onValueChange = { onFormChange(form.copy(username = it)) },
             label = { Text("飞牛 NAS 用户名") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
-            value = editing.password,
-            onValueChange = { editing = editing.copy(password = it) },
+            value = form.password,
+            onValueChange = { onFormChange(form.copy(password = it)) },
             label = { Text("飞牛 NAS 密码") },
             singleLine = true,
             visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
@@ -864,22 +1136,27 @@ private fun NasInlineEditor(
             },
             modifier = Modifier.fillMaxWidth(),
         )
-        OutlinedTextField(
-            value = editing.musicRootPath,
-            onValueChange = { editing = editing.copy(musicRootPath = it) },
-            label = { Text("音乐目录") },
-            placeholder = { Text("/Music 或 /音乐") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
+        MusicDirectorySelectorRow(
+            form = form,
+            canChooseDirectory = canChooseDirectory,
+            onClick = onOpenDirectoryPicker,
         )
+        TextButton(onClick = { showManualPath = true }) {
+            Text("高级：手动填写路径")
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
             OutlinedButton(
-                onClick = { onTest(editing) },
+                onClick = onTest,
                 enabled = !isBusy,
                 modifier = Modifier.weight(1f),
             ) { Text("测试") }
+            OutlinedButton(
+                onClick = onOpenDirectoryPicker,
+                enabled = !isBusy && canChooseDirectory,
+                modifier = Modifier.weight(1f),
+            ) { Text("选择目录") }
             Button(
-                onClick = { onSave(editing) },
+                onClick = onSave,
                 enabled = !isBusy,
                 modifier = Modifier.weight(1f),
             ) { Text("保存") }

@@ -41,7 +41,7 @@ sealed class WebDavResult {
 class WebDavClient(private val baseClient: OkHttpClient) {
     suspend fun testConnection(credentials: NasCredentials): WebDavResult = withContext(Dispatchers.IO) {
         try {
-            val items = listDirectory(credentials, credentials.musicRootPath)
+            val items = listDirectory(credentials, "/")
             WebDavResult.Success(
                 message = if (items.isEmpty()) {
                     "连接成功，但当前目录没有发现音乐"
@@ -69,6 +69,33 @@ class WebDavClient(private val baseClient: OkHttpClient) {
             WebDavResult.Failure("请填写有效的 FN Connect 地址或远程访问地址。")
         } catch (_: Exception) {
             WebDavResult.Failure("无法连接到飞牛 NAS，请检查 FN Connect 是否开启或当前网络是否可用。")
+        }
+    }
+
+    suspend fun testDirectory(credentials: NasCredentials, remotePath: String): WebDavResult = withContext(Dispatchers.IO) {
+        try {
+            listDirectory(credentials, remotePath)
+            WebDavResult.Success()
+        } catch (error: WebDavHttpException) {
+            when (error.code) {
+                401, 403 -> WebDavResult.Failure("没有权限访问这个文件夹，请检查 NAS 用户权限。", error.code)
+                404 -> WebDavResult.Failure("路径解析失败，请重新进入目录选择器选择文件夹。", error.code)
+                else -> WebDavResult.Failure("已连接到 NAS，但暂时无法读取文件夹。请确认飞牛 NAS 已开启文件访问服务，或尝试使用完整远程访问地址。", error.code)
+            }
+        } catch (_: UnknownHostException) {
+            WebDavResult.Failure("无法找到这个 FN Connect 地址，请检查 FN ID 或远程访问地址。")
+        } catch (_: SocketTimeoutException) {
+            WebDavResult.Failure("连接超时，可能是 NAS 休眠、网络较慢或远程访问不稳定。")
+        } catch (_: SSLHandshakeException) {
+            WebDavResult.Failure("安全证书校验失败，请检查访问地址是否正确。")
+        } catch (_: SSLException) {
+            WebDavResult.Failure("安全连接失败，请检查访问地址或证书配置。")
+        } catch (_: ConnectException) {
+            WebDavResult.Failure("NAS 拒绝连接，请检查远程访问服务是否开启。")
+        } catch (_: IllegalArgumentException) {
+            WebDavResult.Failure("路径解析失败，请重新进入目录选择器选择文件夹。")
+        } catch (_: Exception) {
+            WebDavResult.Failure("已连接到 NAS，但暂时无法读取文件夹。请确认飞牛 NAS 已开启文件访问服务，或尝试使用完整远程访问地址。")
         }
     }
 

@@ -29,7 +29,7 @@ class AppContainer(context: Context) {
         AppDatabase::class.java,
         "fn_nas_music.db",
     )
-        .addMigrations(MIGRATION_1_2)
+        .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
         .build()
     private val credentialCipher = CredentialCipher()
     private val credentialsProvider = DatabaseCredentialsProvider(database.nasDao(), credentialCipher)
@@ -62,6 +62,24 @@ private val MIGRATION_1_2 = object : Migration(1, 2) {
             SET inputAddress = baseUrl,
                 resolvedBaseUrl = baseUrl
             WHERE inputAddress = '' OR resolvedBaseUrl = ''
+            """.trimIndent(),
+        )
+    }
+}
+
+private val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE nas_servers ADD COLUMN selectedMusicRemotePath TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE nas_servers ADD COLUMN selectedMusicDisplayPath TEXT NOT NULL DEFAULT '已手动填写路径'")
+        db.execSQL("ALTER TABLE nas_servers ADD COLUMN selectedMusicFolderName TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE nas_servers ADD COLUMN selectedMusicSelectedAt INTEGER")
+        db.execSQL(
+            """
+            UPDATE nas_servers
+            SET selectedMusicRemotePath = musicRootPath,
+                selectedMusicFolderName = musicRootPath,
+                selectedMusicDisplayPath = '已手动填写路径'
+            WHERE selectedMusicRemotePath = ''
             """.trimIndent(),
         )
     }

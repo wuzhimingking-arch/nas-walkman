@@ -16,6 +16,8 @@ import com.fnnas.music.data.db.NasServerEntity
 import com.fnnas.music.data.db.PlaylistSummary
 import com.fnnas.music.data.db.TrackEntity
 import com.fnnas.music.data.repository.AppSettings
+import com.fnnas.music.data.repository.DirectoryCrumb
+import com.fnnas.music.data.repository.DirectoryBrowserResult
 import com.fnnas.music.data.repository.NasForm
 import com.fnnas.music.data.repository.MusicRepository
 import com.fnnas.music.data.repository.ScanProgress
@@ -33,13 +35,35 @@ import kotlinx.coroutines.launch
 
 enum class MainTab { Library, Folders, Player, Settings }
 
+data class DirectoryPickerState(
+    val isOpen: Boolean = false,
+    val current: DirectoryCrumb = DirectoryCrumb(
+        name = "NAS 根目录",
+        remotePath = "/",
+        displayPath = "NAS 根目录",
+    ),
+    val breadcrumbs: List<DirectoryCrumb> = listOf(
+        DirectoryCrumb(
+            name = "NAS 根目录",
+            remotePath = "/",
+            displayPath = "NAS 根目录",
+        ),
+    ),
+    val directories: List<com.fnnas.music.network.NasDirectory> = emptyList(),
+    val isLoading: Boolean = false,
+)
+
 data class AppUiState(
     val nasServer: NasServerEntity? = null,
+    val connectionForm: NasForm = NasForm(),
+    val isConnectionTested: Boolean = false,
+    val directoryPicker: DirectoryPickerState = DirectoryPickerState(),
+    val showScanPrompt: Boolean = false,
     val tracks: List<TrackEntity> = emptyList(),
     val favorites: List<TrackEntity> = emptyList(),
     val recent: List<TrackEntity> = emptyList(),
     val playlists: List<PlaylistSummary> = emptyList(),
-    val folderPath: String = "/Music",
+    val folderPath: String = "/",
     val folderItems: List<RemoteItem> = emptyList(),
     val selectedTab: MainTab = MainTab.Library,
     val searchQuery: String = "",
@@ -87,17 +111,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun defaultForm(): NasForm {
         val server = _uiState.value.nasServer
         return if (server == null) {
-            NasForm()
+            _uiState.value.connectionForm
         } else {
-            NasForm(
-                name = server.name,
-                mode = server.mode,
-                inputAddress = server.inputAddress.ifBlank { server.resolvedBaseUrl.ifBlank { server.baseUrl } },
-                username = server.username,
-                password = "",
-                musicRootPath = server.musicRootPath,
-                autoScanWifiOnly = server.autoScanWifiOnly,
-                allowMobilePlayback = server.allowMobilePlayback,
+            server.toForm()
+        }
+    }
+
+    fun updateConnectionForm(form: NasForm) {
+        _uiState.update { state ->
+            state.copy(
+                connectionForm = form,
+                isConnectionTested = false,
             )
         }
     }
@@ -117,13 +141,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(message = null) }
     }
 
-    fun testConnection(form: NasForm) {
+    fun testConnection(form: NasForm = _uiState.value.connectionForm) {
         viewModelScope.launch {
-            _uiState.update { it.copy(isBusy = true) }
+            _uiState.update { it.copy(isBusy = true, connectionForm = form) }
             val result = repository.testConnection(form)
             _uiState.update { state ->
                 state.copy(
                     isBusy = false,
+                    isConnectionTested = result is WebDavResult.Success,
                     message = result.messageOrSuccess("连接成功"),
                 )
             }
@@ -143,21 +168,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun saveNas(form: NasForm) {
+    fun saveNas(form: NasForm = _uiState.value.connectionForm) {
         viewModelScope.launch {
-            _uiState.update { it.copy(isBusy = true) }
+            _uiState.update { it.copy(isBusy = true, connectionForm = form) }
             val result = repository.saveNas(form)
             _uiState.update {
                 it.copy(
                     isBusy = false,
                     selectedTab = if (result is WebDavResult.Success) MainTab.Library else it.selectedTab,
+                    showScanPrompt = result is WebDavResult.Success,
                     message = result.messageOrSuccess("连接成功，已保存 NAS 配置"),
                 )
             }
             if (result is WebDavResult.Success) {
-                openFolder(form.musicRootPath)
+                openFolder(form.selectedMusicRemotePath.ifBlank { form.musicRootPath })
             }
         }
+    }
+
+    fun dismissScanPrompt() {
+        _uiState.update { it.copy(showScanPrompt = false) }
+    }
+
+    fun confirmScanPrompt() {
+        _uiState.update { it.copy(showScanPrompt = false) }
+        scanLibrary()
     }
 
     fun deleteBinding() {
@@ -166,12 +201,95 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update {
                 it.copy(
                     nasServer = null,
+                    connectionForm = NasForm(),
+                    isConnectionTested = false,
+                    directoryPicker = DirectoryPickerState(),
                     folderItems = emptyList(),
                     tracks = emptyList(),
                     favorites = emptyList(),
                     recent = emptyList(),
                     selectedTab = MainTab.Library,
                     message = "已删除 NAS 绑定",
+                )
+            }
+        }
+    }
+
+    fun openDirectoryPicker() {
+        val form = _uiState.value.connectionForm
+        if (!_uiState.value.isConnectionTested && _uiState.value.nasServer == null) {
+            _uiState.update { it.copy(message = "请先测试连接") }
+            return
+        }
+        val root = DirectoryCrumb("NAS 根目录", "/", "NAS 根目录")
+        loadDirectoryPicker(form, root, listOf(root), open = true)
+    }
+
+    fun closeDirectoryPicker() {
+        _uiState.update { it.copy(directoryPicker = DirectoryPickerState()) }
+    }
+
+    fun refreshDirectoryPicker() {
+        val picker = _uiState.value.directoryPicker
+        loadDirectoryPicker(_uiState.value.connectionForm, picker.current, picker.breadcrumbs, open = true)
+    }
+
+    fun enterPickerDirectory(directory: com.fnnas.music.network.NasDirectory) {
+        val crumb = DirectoryCrumb(
+            name = directory.name,
+            remotePath = directory.remotePath,
+            displayPath = directory.displayPath,
+        )
+        val nextBreadcrumbs = _uiState.value.directoryPicker.breadcrumbs + crumb
+        loadDirectoryPicker(_uiState.value.connectionForm, crumb, nextBreadcrumbs, open = true)
+    }
+
+    fun pickerGoUp() {
+        val picker = _uiState.value.directoryPicker
+        if (picker.breadcrumbs.size <= 1) return
+        val nextBreadcrumbs = picker.breadcrumbs.dropLast(1)
+        val parent = nextBreadcrumbs.last()
+        loadDirectoryPicker(_uiState.value.connectionForm, parent, nextBreadcrumbs, open = true)
+    }
+
+    fun chooseCurrentPickerDirectory() {
+        val picker = _uiState.value.directoryPicker
+        val current = picker.current
+        val updatedForm = _uiState.value.connectionForm.copy(
+            musicRootPath = current.remotePath,
+            selectedMusicRemotePath = current.remotePath,
+            selectedMusicDisplayPath = current.displayPath,
+            selectedMusicFolderName = current.name,
+        )
+        _uiState.update {
+            it.copy(
+                connectionForm = updatedForm,
+                directoryPicker = DirectoryPickerState(),
+                message = "已选择音乐目录：${current.displayPath}",
+            )
+        }
+    }
+
+    fun setManualMusicPath(path: String) {
+        val normalized = "/" + path.trim().trim('/').replace('\\', '/')
+        val updated = _uiState.value.connectionForm.copy(
+            musicRootPath = normalized,
+            selectedMusicRemotePath = normalized,
+            selectedMusicDisplayPath = "已手动填写路径：$normalized",
+            selectedMusicFolderName = normalized.substringAfterLast('/').ifBlank { normalized },
+        )
+        _uiState.update { it.copy(connectionForm = updated, message = "已填写音乐目录路径") }
+    }
+
+    fun testManualMusicPath(path: String) {
+        viewModelScope.launch {
+            val normalized = "/" + path.trim().trim('/').replace('\\', '/')
+            _uiState.update { it.copy(isBusy = true) }
+            val result = repository.testDirectoryForForm(_uiState.value.connectionForm, normalized)
+            _uiState.update {
+                it.copy(
+                    isBusy = false,
+                    message = result.messageOrSuccess("路径可以访问"),
                 )
             }
         }
@@ -354,11 +472,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update {
                     it.copy(
                         nasServer = server,
-                        folderPath = server?.musicRootPath ?: it.folderPath,
+                        connectionForm = server?.toForm() ?: it.connectionForm,
+                        folderPath = server?.selectedMusicRemotePath?.ifBlank { server.musicRootPath } ?: it.folderPath,
                     )
                 }
                 if (server != null && _uiState.value.folderItems.isEmpty()) {
-                    openFolder(server.musicRootPath)
+                    openFolder(server.selectedMusicRemotePath.ifBlank { server.musicRootPath })
                 }
             }
         }
@@ -449,4 +568,68 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun normalizePath(path: String): String = "/" + path.trim().trim('/').replace('\\', '/')
+
+    private fun loadDirectoryPicker(
+        form: NasForm,
+        current: DirectoryCrumb,
+        breadcrumbs: List<DirectoryCrumb>,
+        open: Boolean,
+    ) {
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    directoryPicker = it.directoryPicker.copy(
+                        isOpen = open,
+                        current = current,
+                        breadcrumbs = breadcrumbs,
+                        isLoading = true,
+                    ),
+                )
+            }
+            when (val result = repository.listDirectoriesForForm(form, current.remotePath, current.displayPath)) {
+                is DirectoryBrowserResult.Success -> {
+                    _uiState.update {
+                        it.copy(
+                            directoryPicker = it.directoryPicker.copy(
+                                isOpen = open,
+                                current = result.snapshot.current,
+                                breadcrumbs = breadcrumbs,
+                                directories = result.snapshot.directories,
+                                isLoading = false,
+                            ),
+                        )
+                    }
+                }
+                is DirectoryBrowserResult.Failure -> {
+                    _uiState.update {
+                        it.copy(
+                            directoryPicker = it.directoryPicker.copy(
+                                isOpen = open,
+                                current = current,
+                                breadcrumbs = breadcrumbs,
+                                directories = emptyList(),
+                                isLoading = false,
+                            ),
+                            message = result.message,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun NasServerEntity.toForm(): NasForm =
+        NasForm(
+            name = name,
+            mode = mode,
+            inputAddress = inputAddress.ifBlank { resolvedBaseUrl.ifBlank { baseUrl } },
+            username = username,
+            password = "",
+            musicRootPath = selectedMusicRemotePath.ifBlank { musicRootPath },
+            selectedMusicRemotePath = selectedMusicRemotePath.ifBlank { musicRootPath },
+            selectedMusicDisplayPath = selectedMusicDisplayPath,
+            selectedMusicFolderName = selectedMusicFolderName,
+            autoScanWifiOnly = autoScanWifiOnly,
+            allowMobilePlayback = allowMobilePlayback,
+        )
 }
