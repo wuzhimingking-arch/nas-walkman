@@ -5,15 +5,15 @@ plugins {
 }
 
 android {
-    namespace = "com.fnnas.music"
+    namespace = "tech.peakedge.naswalkman"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.fnnas.music"
+        applicationId = "tech.peakedge.naswalkman"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.4.1"
     }
 
     buildTypes {

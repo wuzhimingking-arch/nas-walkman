@@ -1,1 +1,1 @@
--keep class com.fnnas.music.data.db.** { *; }
+-keep class tech.peakedge.naswalkman.data.db.** { *; }
