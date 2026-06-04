@@ -61,21 +61,27 @@ class FnConnectClient(private val client: OkHttpClient) {
 
         val response = client.newCall(request).execute()
         response.use {
+            val contentType = it.body?.contentType()?.toString()
             val text = it.body?.string().orEmpty()
-            val bodyKind = HttpBodyClassifier.classify(text, it.body?.contentType()?.toString())
+            val diagnosis = HttpBodyClassifier.diagnose(text, contentType)
             SafeHttpLog.event(
                 name = "fnconnect.resolve",
                 url = request.url.toString(),
+                finalUrl = it.request.url.toString(),
+                redirected = it.priorResponse != null,
                 status = it.code,
-                bodyKind = bodyKind,
-                contentType = it.body?.contentType()?.toString(),
+                bodyKind = diagnosis.kind,
+                bodyReason = diagnosis.reason,
+                bodySummary = diagnosis.summary,
+                contentType = contentType,
                 setCookie = it.headers("Set-Cookie").joinToString(";"),
+                requestCookie = it.request.header("Cookie"),
             )
             if (!it.isSuccessful) {
                 throw FnConnectException("FN Connect 查询失败，服务返回 HTTP ${it.code}。")
             }
-            if (bodyKind != HttpBodyClassifier.JSON) {
-                throw FnConnectException("FN Connect 返回 HTTP 200，但内容不是有效的连接信息，请稍后重试。")
+            if (diagnosis.kind != HttpBodyClassifier.JSON) {
+                throw FnConnectException("FN Connect 返回的不是有效连接信息：${diagnosis.reason}。请稍后重试。")
             }
 
             val json = runCatching { JSONObject(text) }
@@ -139,22 +145,28 @@ class FnConnectClient(private val client: OkHttpClient) {
                 .build()
             val response = client.newCall(request).execute()
             response.use {
+                val contentType = it.body?.contentType()?.toString()
                 val text = it.body?.string().orEmpty()
-                val bodyKind = HttpBodyClassifier.classify(text, it.body?.contentType()?.toString())
+                val diagnosis = HttpBodyClassifier.diagnose(text, contentType)
                 SafeHttpLog.event(
                     name = "fnconnect.check",
                     url = url,
+                    finalUrl = it.request.url.toString(),
+                    redirected = it.priorResponse != null,
                     status = it.code,
-                    bodyKind = bodyKind,
-                    contentType = it.body?.contentType()?.toString(),
+                    bodyKind = diagnosis.kind,
+                    bodyReason = diagnosis.reason,
+                    bodySummary = diagnosis.summary,
+                    contentType = contentType,
                     setCookie = it.headers("Set-Cookie").joinToString(";"),
+                    requestCookie = it.request.header("Cookie"),
                 )
-                if ((it.code == 200 || it.code == 204) && bodyKind != HttpBodyClassifier.HTML_OR_LOGIN) {
+                if ((it.code == 200 || it.code == 204) && diagnosis.kind != HttpBodyClassifier.HTML_OR_LOGIN) {
                     FnConnectEndpointCheck(isReachable = true)
                 } else {
                     FnConnectEndpointCheck(
                         isReachable = false,
-                        message = "FN Connect 地址可打开，但返回的不是有效会话检查结果。",
+                        message = "FN Connect 地址可打开，但会话检查返回 ${diagnosis.reason}，不是有效文件服务会话。",
                     )
                 }
             }

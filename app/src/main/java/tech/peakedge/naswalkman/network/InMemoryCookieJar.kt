@@ -25,8 +25,8 @@ class InMemoryCookieJar : CookieJar {
         )
     }
 
-    override fun loadForRequest(url: HttpUrl): List<Cookie> =
-        synchronized(store) {
+    override fun loadForRequest(url: HttpUrl): List<Cookie> {
+        val cookies = synchronized(store) {
             store[url.host]
                 .orEmpty()
                 .filter { cookie ->
@@ -34,4 +34,13 @@ class InMemoryCookieJar : CookieJar {
                         url.encodedPath.startsWith(cookie.path)
                 }
         }
+        if (cookies.isNotEmpty()) {
+            SafeHttpLog.event(
+                name = "cookie.load",
+                url = url.toString(),
+                requestCookie = cookies.joinToString(";") { "${it.name}=<redacted>" },
+            )
+        }
+        return cookies
+    }
 }

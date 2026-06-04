@@ -13,6 +13,7 @@ import tech.peakedge.naswalkman.data.db.TrackEntity
 import tech.peakedge.naswalkman.network.ConnectionResolver
 import tech.peakedge.naswalkman.network.FnConnectClient
 import tech.peakedge.naswalkman.network.FnConnectException
+import tech.peakedge.naswalkman.network.HttpBodyClassifier
 import tech.peakedge.naswalkman.network.NasConnectionDraft
 import tech.peakedge.naswalkman.network.NasCredentials
 import tech.peakedge.naswalkman.network.NasDirectory
@@ -127,8 +128,12 @@ class MusicRepository(
             preferredBaseUrl = successfulBaseUrl,
         )
         if (directoryAttempt.result !is WebDavResult.Success) return directoryAttempt.result
-        val selectedDisplayPath = normalized.selectedMusicDisplayPath
-            .ifBlank { nasFileClient.getDisplayPath(selectedPath) }
+        val successfulPath = directoryAttempt.successfulRemotePath ?: selectedPath
+        val selectedDisplayPath = if (normalizeRemotePath(successfulPath) == normalizeRemotePath(selectedPath)) {
+            normalized.selectedMusicDisplayPath.ifBlank { nasFileClient.getDisplayPath(successfulPath) }
+        } else {
+            nasFileClient.getDisplayPath(successfulPath)
+        }
         val selectedFolderName = normalized.selectedMusicFolderName
             .ifBlank { selectedDisplayPath.substringAfterLast(" / ", selectedDisplayPath) }
         val now = System.currentTimeMillis()
@@ -145,8 +150,8 @@ class MusicRepository(
             } else {
                 credentialCipher.encrypt(normalized.password)
             },
-            musicRootPath = selectedPath,
-            selectedMusicRemotePath = selectedPath,
+            musicRootPath = successfulPath,
+            selectedMusicRemotePath = successfulPath,
             selectedMusicDisplayPath = selectedDisplayPath,
             selectedMusicFolderName = selectedFolderName,
             selectedMusicSelectedAt = now,
@@ -279,9 +284,15 @@ class MusicRepository(
     ): ConnectionAttempt {
         val resolved = connectionResolver.resolve(normalized.toConnectionDraft())
         val normalizedPath = normalizeRemotePath(remotePath)
+        val pathCandidates = directoryPathCandidates(
+            path = normalizedPath,
+            username = normalized.username,
+            includeFnVariants = normalized.mode == NasConnectionMode.FN_CONNECT && resolved.wasFnIdOnly,
+        )
         var result: WebDavResult = WebDavResult.Failure("音乐目录不存在，请重新选择目录或确认路径是否正确。")
         var lastFailure: WebDavResult.Failure? = null
         var successfulBaseUrl: String? = null
+        var successfulRemotePath: String? = null
         val candidates = try {
             credentialsCandidatesForForm(normalized)
         } catch (error: FnConnectException) {
@@ -308,12 +319,16 @@ class MusicRepository(
                     continue
                 }
             }
-            result = nasFileClient.testDirectory(credentials, normalizedPath)
-            if (result is WebDavResult.Success) {
-                successfulBaseUrl = credentials.baseUrl
-                break
+            for (candidatePath in pathCandidates) {
+                result = nasFileClient.testDirectory(credentials, candidatePath)
+                if (result is WebDavResult.Success) {
+                    successfulBaseUrl = credentials.baseUrl
+                    successfulRemotePath = candidatePath
+                    break
+                }
+                lastFailure = chooseBetterFailure(lastFailure, result as? WebDavResult.Failure)
             }
-            lastFailure = chooseBetterFailure(lastFailure, result as? WebDavResult.Failure)
+            if (result is WebDavResult.Success) break
         }
         if (result !is WebDavResult.Success && normalized.mode == NasConnectionMode.FN_CONNECT && resolved.wasFnIdOnly) {
             result = lastFailure?.withFnConnectContext()
@@ -321,7 +336,11 @@ class MusicRepository(
         } else if (result !is WebDavResult.Success) {
             lastFailure?.let { result = it }
         }
-        return ConnectionAttempt(result = result, successfulBaseUrl = successfulBaseUrl)
+        return ConnectionAttempt(
+            result = result,
+            successfulBaseUrl = successfulBaseUrl,
+            successfulRemotePath = successfulRemotePath,
+        )
     }
 
     suspend fun currentCredentials(): NasCredentials? {
@@ -556,6 +575,7 @@ class MusicRepository(
     private data class ConnectionAttempt(
         val result: WebDavResult,
         val successfulBaseUrl: String?,
+        val successfulRemotePath: String? = null,
     )
 
     private fun NasForm.effectiveMusicPath(): String =
@@ -565,6 +585,34 @@ class MusicRepository(
         path.trim().takeIf { it.isNotBlank() }?.let(::normalizeRemotePath).orEmpty()
 
     private fun normalizeRemotePath(path: String): String = "/" + path.trim().replace('\\', '/').trim('/')
+
+    private fun directoryPathCandidates(
+        path: String,
+        username: String,
+        includeFnVariants: Boolean,
+    ): List<String> {
+        val normalized = normalizeRemotePath(path)
+        if (!includeFnVariants) return listOf(normalized)
+
+        val trimmed = normalized.trim('/')
+        val folderName = trimmed.substringAfterLast('/').ifBlank { trimmed.ifBlank { "music" } }
+        return buildList {
+            add(normalized)
+            add("/$folderName")
+            add("/dav/$folderName")
+            add("/webdav/$folderName")
+            if (username.isNotBlank()) {
+                add("/home/$username/$folderName")
+                add("/homes/$username/$folderName")
+                add("/files/$username/$folderName")
+                add("/$username/$folderName")
+            }
+            if (trimmed.isNotBlank() && !trimmed.startsWith("dav/")) add("/dav/$trimmed")
+            if (trimmed.isNotBlank() && !trimmed.startsWith("webdav/")) add("/webdav/$trimmed")
+        }
+            .map(::normalizeRemotePath)
+            .distinct()
+    }
 
     private fun childDisplayPath(parent: String, child: String): String =
         if (parent == ROOT_DISPLAY_PATH) child else "$parent / $child"
@@ -580,13 +628,39 @@ class MusicRepository(
             405, 501 -> "文件服务未开启或不支持目录读取。请到飞牛 OS 的系统设置 > 文件共享协议 > WebDAV 开启服务。"
             else -> "已连接到 NAS，但暂时无法读取文件夹，文件服务返回 HTTP ${error.code}。"
         }
-        is WebDavUnexpectedResponseException -> "文件接口返回 HTTP ${error.code}，但不是文件目录结构。可能打开的是登录页、FN Connect 引导页或权限提示页，请确认文件服务地址和目录权限。"
+        is WebDavUnexpectedResponseException -> unexpectedDirectoryMessage(error)
         is UnknownHostException -> "无法找到这个 FN Connect 地址，请检查 FN ID 或远程访问地址。"
         is SocketTimeoutException -> "网络不可达或连接超时，可能是 NAS 休眠、网络较慢或远程访问不稳定。"
         is SSLHandshakeException -> "安全证书校验失败，请检查访问地址是否正确。"
         is SSLException -> "安全连接失败，请检查访问地址或证书配置。"
         is ConnectException -> "网络不可达，NAS 拒绝连接。请检查远程访问服务是否开启。"
         else -> "已连接到 NAS，但暂时无法读取文件夹。请确认飞牛 NAS 已开启文件访问服务，并给当前账号授权共享目录。"
+    }
+
+    private fun unexpectedDirectoryMessage(error: WebDavUnexpectedResponseException): String {
+        val reason = error.diagnosis.reason
+        return when {
+            reason.startsWith("fn-connect-page") ->
+                "返回的是 FN Connect 远程访问引导页，不是文件目录。请开启 WebDAV/文件访问服务，并使用 WebDAV 文件服务地址。"
+            reason.startsWith("login-page") ->
+                "返回的是登录页，登录态失效或文件服务需要网页登录，请重新登录。"
+            reason.startsWith("captcha-page") ->
+                "返回的是验证码页面，App 无法通过该页面读取文件目录。"
+            reason.startsWith("permission-page") ->
+                "返回的是权限页面，当前账号没有文件访问权限。"
+            reason.startsWith("not-found-page") ->
+                "返回的是 404/不存在页面，未找到 music 目录，请检查音乐目录路径。"
+            reason.startsWith("method-not-allowed-page") ->
+                "当前地址不支持目录读取，可能不是 WebDAV 文件服务地址。"
+            reason == "webdav-xml-parse-failed" ->
+                "文件服务可访问，但目录解析失败。"
+            reason == "empty-body" ->
+                "文件服务返回空内容，无法确认目录列表。"
+            error.diagnosis.kind == HttpBodyClassifier.JSON ->
+                "返回的是 JSON 响应（${reason}），不是文件目录列表。"
+            else ->
+                "文件服务返回了无法识别的内容，已在调试日志输出脱敏摘要。"
+        }
     }
 
     private suspend fun findLyrics(credentials: NasCredentials, track: TrackEntity): LyricsLoadResult {
