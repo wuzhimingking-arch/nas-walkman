@@ -1,5 +1,7 @@
 package tech.peakedge.naswalkman.ui.components
 
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -10,6 +12,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -51,6 +54,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -58,13 +62,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import tech.peakedge.naswalkman.data.db.NasConnectionMode
 import tech.peakedge.naswalkman.ui.theme.AppFavorite
 
@@ -351,9 +361,18 @@ fun AppSectionTitle(
 @Composable
 fun AlbumCover(
     modifier: Modifier = Modifier,
+    coverPath: String? = null,
     cornerRadius: Dp = 12.dp,
     iconSize: Dp = 26.dp,
 ) {
+    val image by produceState<ImageBitmap?>(initialValue = null, coverPath) {
+        value = withContext(Dispatchers.IO) {
+            coverPath
+                ?.let(::File)
+                ?.takeIf { it.exists() && it.length() > 0L }
+                ?.let { file -> BitmapFactory.decodeFile(file.absolutePath)?.asImageBitmap() }
+        }
+    }
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(cornerRadius))
@@ -368,12 +387,21 @@ fun AlbumCover(
             ),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            Icons.Rounded.MusicNote,
-            contentDescription = null,
-            modifier = Modifier.size(iconSize),
-            tint = MaterialTheme.colorScheme.primary,
-        )
+        if (image != null) {
+            Image(
+                bitmap = image!!,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+        } else {
+            Icon(
+                Icons.Rounded.MusicNote,
+                contentDescription = null,
+                modifier = Modifier.size(iconSize),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        }
     }
 }
 
@@ -383,6 +411,8 @@ fun TrackListItem(
     subtitle: String,
     duration: String,
     isCurrent: Boolean,
+    isPreparing: Boolean = false,
+    coverPath: String? = null,
     onClick: () -> Unit,
     onMore: () -> Unit,
     modifier: Modifier = Modifier,
@@ -399,6 +429,7 @@ fun TrackListItem(
             modifier = Modifier
                 .size(48.dp)
                 .aspectRatio(1f),
+            coverPath = coverPath,
             cornerRadius = 10.dp,
             iconSize = 22.dp,
         )
@@ -421,12 +452,16 @@ fun TrackListItem(
         }
         Spacer(Modifier.width(8.dp))
         Column(horizontalAlignment = Alignment.End) {
-            Text(
-                duration,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (isCurrent) {
+            if (isPreparing) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            } else {
+                Text(
+                    duration,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (isCurrent && !isPreparing) {
                 EqualizerBars(Modifier.padding(top = 4.dp))
             }
         }
@@ -459,6 +494,7 @@ private fun EqualizerBars(modifier: Modifier = Modifier) {
 fun MiniPlayerBar(
     title: String,
     artist: String,
+    coverPath: String? = null,
     isPlaying: Boolean,
     progress: Float,
     onOpen: () -> Unit,
@@ -489,6 +525,7 @@ fun MiniPlayerBar(
         ) {
             AlbumCover(
                 modifier = Modifier.size(48.dp),
+                coverPath = coverPath,
                 cornerRadius = 10.dp,
                 iconSize = 22.dp,
             )

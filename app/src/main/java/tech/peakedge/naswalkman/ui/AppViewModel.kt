@@ -91,6 +91,7 @@ data class AppUiState(
     val scanProgress: ScanProgress = ScanProgress(),
     val message: String? = null,
     val currentTrackId: String? = null,
+    val preparingTrackId: String? = null,
     val isPlaying: Boolean = false,
     val isShuffleEnabled: Boolean = false,
     val repeatMode: Int = Player.REPEAT_MODE_OFF,
@@ -127,6 +128,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var controller: MediaController? = null
     private var playbackTicker: Job? = null
     private var lyricLoadJob: Job? = null
+    private var playTrackJob: Job? = null
+    private var playRequestId: Long = 0L
+    private val coverLoadJobs = mutableMapOf<String, Job>()
     private val playbackCommandMutex = Mutex()
     private var lastPlaybackCommandAtMs = 0L
 
@@ -159,6 +163,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     init {
         bindRepositoryFlows()
         observeLyricRequests()
+        observeCoverRequests()
         connectPlaybackController(application)
     }
 
@@ -235,7 +240,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             if (result is WebDavResult.Success) {
-                openFolder(form.selectedMusicRemotePath.ifBlank { form.musicRootPath })
+                _uiState.update {
+                    it.copy(folderPath = normalizePath(form.selectedMusicRemotePath.ifBlank { form.musicRootPath }))
+                }
             }
         }
     }
@@ -372,6 +379,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun openFolderBrowser() {
+        val state = _uiState.value
+        val server = state.nasServer
+        if (server == null) {
+            _uiState.update { it.copy(message = "请先连接你的 NAS") }
+            return
+        }
+        val path = state.folderPath.ifBlank {
+            server.selectedMusicRemotePath.ifBlank { server.musicRootPath }
+        }
+        openFolder(path)
+    }
+
     fun goUpFolder() {
         val current = _uiState.value.folderPath.trim('/').replace('\\', '/')
         val parent = current.substringBeforeLast('/', missingDelimiterValue = "")
@@ -394,38 +414,84 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun playTrack(track: TrackEntity, queue: List<TrackEntity> = _uiState.value.tracks) {
-        runPlaybackCommand playback@{
-            val sourceQueue = queue.takeIf { items -> items.any { it.id == track.id } } ?: listOf(track)
-            val mediaItems = sourceQueue.mapNotNull { item ->
-                val uri = repository.mediaUriFor(item) ?: return@mapNotNull null
-                item to MediaItem.Builder()
-                    .setMediaId(item.id)
-                    .setUri(uri)
-                    .setMediaMetadata(
-                        MediaMetadata.Builder()
-                            .setTitle(item.title)
-                            .setArtist(item.artist.orEmpty())
-                            .setAlbumTitle(item.album.orEmpty())
-                            .build(),
-                    )
-                    .build()
+        val state = _uiState.value
+        if (track.id == state.currentTrackId && playTrackJob?.isActive == true) return
+
+        val shouldOpenPlayer = state.currentTrackId == null
+        val requestId = ++playRequestId
+        playTrackJob?.cancel()
+        requestCover(track, forceCheck = true)
+
+        _uiState.update {
+            it.copy(
+                selectedTab = if (shouldOpenPlayer) MainTab.Player else it.selectedTab,
+                currentTrackId = track.id,
+                preparingTrackId = track.id,
+                playbackPositionMs = 0L,
+                playbackDurationMs = 0L,
+                isPlaying = false,
+            )
+        }
+
+        playTrackJob = viewModelScope.launch {
+            runCatching {
+                val player = controller ?: error("播放器尚未准备好")
+                val sourceQueue = queue.takeIf { items -> items.any { it.id == track.id } } ?: listOf(track)
+                val mediaItems = sourceQueue.mapNotNull { item ->
+                    val uri = repository.mediaUriFor(item) ?: return@mapNotNull null
+                    item to MediaItem.Builder()
+                        .setMediaId(item.id)
+                        .setUri(uri)
+                        .setMediaMetadata(
+                            MediaMetadata.Builder()
+                                .setTitle(item.title)
+                                .setArtist(item.artist.orEmpty())
+                                .setAlbumTitle(item.album.orEmpty())
+                                .build(),
+                        )
+                        .build()
+                }
+                if (requestId != playRequestId) return@launch
+
+                val startIndex = mediaItems.indexOfFirst { it.first.id == track.id }.coerceAtLeast(0)
+                val items = mediaItems.map { it.second }
+                if (items.isEmpty()) {
+                    error("无法播放，请先连接 NAS")
+                }
+
+                if (player.currentMediaItem?.mediaId == track.id && player.playbackState != Player.STATE_IDLE) {
+                    player.play()
+                } else {
+                    player.setMediaItems(items, startIndex, 0L)
+                    player.prepare()
+                    player.play()
+                }
+                if (requestId != playRequestId) return@launch
+
+                repository.markPlayed(track.id)
+                _uiState.update {
+                    if (requestId == playRequestId) {
+                        it.copy(
+                            selectedTab = if (shouldOpenPlayer) MainTab.Player else it.selectedTab,
+                            currentTrackId = track.id,
+                            preparingTrackId = null,
+                            isPlaying = player.isPlaying,
+                        )
+                    } else {
+                        it
+                    }
+                }
+            }.onFailure { error ->
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                if (requestId == playRequestId) {
+                    _uiState.update {
+                        it.copy(
+                            preparingTrackId = null,
+                            message = error.message ?: "播放失败，请检查文件格式或网络连接",
+                        )
+                    }
+                }
             }
-            val startIndex = mediaItems.indexOfFirst { it.first.id == track.id }.coerceAtLeast(0)
-            val items = mediaItems.map { it.second }
-            if (items.isEmpty()) {
-                _uiState.update { it.copy(message = "无法播放，请先连接 NAS") }
-                return@playback
-            }
-            val player = controller
-            if (player == null) {
-                _uiState.update { it.copy(message = "播放器尚未准备好") }
-                return@playback
-            }
-            player.setMediaItems(items, startIndex, 0L)
-            player.prepare()
-            player.play()
-            repository.markPlayed(track.id)
-            _uiState.update { it.copy(selectedTab = MainTab.Player, currentTrackId = track.id) }
         }
     }
 
@@ -570,13 +636,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         folderPath = server?.selectedMusicRemotePath?.ifBlank { server.musicRootPath } ?: it.folderPath,
                     )
                 }
-                if (server != null && _uiState.value.folderItems.isEmpty()) {
-                    openFolder(server.selectedMusicRemotePath.ifBlank { server.musicRootPath })
-                }
             }
         }
         viewModelScope.launch {
-            repository.tracks.collect { tracks -> _uiState.update { it.copy(tracks = tracks) } }
+            repository.tracks.collect { tracks ->
+                _uiState.update { it.copy(tracks = tracks) }
+                tracks.take(COVER_WARMUP_LIMIT).forEach { requestCover(it) }
+                tracks.firstOrNull { it.id == _uiState.value.currentTrackId }
+                    ?.let { requestCover(it, forceCheck = true) }
+            }
         }
         viewModelScope.launch {
             repository.favorites.collect { favorites -> _uiState.update { it.copy(favorites = favorites) } }
@@ -601,6 +669,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 .map { it.currentTrackId }
                 .distinctUntilChanged()
                 .collect { trackId -> loadLyricsForTrack(trackId, forceRefresh = false) }
+        }
+    }
+
+    private fun observeCoverRequests() {
+        viewModelScope.launch {
+            uiState
+                .map { it.currentTrackId }
+                .distinctUntilChanged()
+                .collect { trackId ->
+                    _uiState.value.currentTrack
+                        ?.takeIf { it.id == trackId }
+                        ?.let { requestCover(it, forceCheck = true) }
+                }
         }
     }
 
@@ -645,7 +726,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         override fun onIsPlayingChanged(isPlaying: Boolean) = refreshPlaybackState()
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            _uiState.update { it.copy(currentTrackId = mediaItem?.mediaId) }
+            val mediaId = mediaItem?.mediaId
+            _uiState.update {
+                it.copy(
+                    currentTrackId = mediaId,
+                    preparingTrackId = if (it.preparingTrackId == mediaId) null else it.preparingTrackId,
+                )
+            }
+            _uiState.value.currentTrack
+                ?.takeIf { it.id == mediaId }
+                ?.let { requestCover(it, forceCheck = true) }
             refreshPlaybackState()
         }
 
@@ -672,6 +762,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 isShuffleEnabled = player.shuffleModeEnabled,
                 repeatMode = player.repeatMode,
                 currentTrackId = currentMediaId ?: it.currentTrackId,
+                preparingTrackId = if (
+                    it.preparingTrackId == currentMediaId &&
+                    (player.isPlaying || player.playbackState == Player.STATE_READY)
+                ) {
+                    null
+                } else {
+                    it.preparingTrackId
+                },
                 playbackPositionMs = player.currentPosition.coerceAtLeast(0L),
                 playbackDurationMs = duration,
             )
@@ -750,9 +848,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun requestCover(track: TrackEntity, forceCheck: Boolean = false) {
+        if (!forceCheck && track.coverCachePath?.let { java.io.File(it).exists() } == true) return
+        if (coverLoadJobs[track.id]?.isActive == true) return
+        val job = viewModelScope.launch {
+            repository.ensureCover(track)
+        }
+        coverLoadJobs[track.id] = job
+        job.invokeOnCompletion {
+            if (coverLoadJobs[track.id] === job) {
+                coverLoadJobs.remove(track.id)
+            }
+        }
+    }
+
     override fun onCleared() {
         playbackTicker?.cancel()
         lyricLoadJob?.cancel()
+        playTrackJob?.cancel()
+        coverLoadJobs.values.forEach { it.cancel() }
+        coverLoadJobs.clear()
         controller?.removeListener(playerListener)
         controller?.release()
         controllerFuture?.cancel(true)
@@ -833,5 +948,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
         private const val TAG = "AppViewModel"
         private const val PLAYBACK_COMMAND_DEBOUNCE_MS = 180L
+        private const val COVER_WARMUP_LIMIT = 8
     }
 }

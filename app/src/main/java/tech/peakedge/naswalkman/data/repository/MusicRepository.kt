@@ -1,7 +1,11 @@
 package tech.peakedge.naswalkman.data.repository
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import androidx.room.withTransaction
+import okhttp3.Credentials
 import tech.peakedge.naswalkman.data.db.AppDatabase
 import tech.peakedge.naswalkman.data.db.CacheItemEntity
 import tech.peakedge.naswalkman.data.db.NasConnectionMode
@@ -29,6 +33,7 @@ import java.security.MessageDigest
 import java.util.Locale
 import javax.net.ssl.SSLException
 import javax.net.ssl.SSLHandshakeException
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
@@ -458,6 +463,33 @@ class MusicRepository(
         }
     }
 
+    suspend fun ensureCover(track: TrackEntity): String? = withContext(Dispatchers.IO) {
+        track.coverCachePath
+            ?.let(::File)
+            ?.takeIf { it.exists() && it.length() > 0L }
+            ?.let { return@withContext it.absolutePath }
+
+        val credentials = currentCredentials() ?: return@withContext null
+        val embeddedCover = runCatching {
+            extractEmbeddedCover(credentials, track)
+        }.getOrNull() ?: return@withContext null
+
+        val bitmap = BitmapFactory.decodeByteArray(embeddedCover, 0, embeddedCover.size)
+            ?: return@withContext null
+        val thumbnail = bitmap.scaledToMaxEdge(COVER_MAX_EDGE_PX)
+        val coverDir = File(context.cacheDir, "album-art").apply { mkdirs() }
+        val target = File(coverDir, "${track.id}.jpg")
+
+        return@withContext runCatching {
+            target.outputStream().use { output ->
+                thumbnail.compress(Bitmap.CompressFormat.JPEG, COVER_JPEG_QUALITY, output)
+            }
+            val path = target.absolutePath
+            database.trackDao().updateCoverCachePath(track.id, path, System.currentTimeMillis())
+            path
+        }.getOrNull()
+    }
+
     suspend fun clearCache() = withContext(Dispatchers.IO) {
         File(context.filesDir, "music-cache").deleteRecursively()
         database.cacheDao().clear()
@@ -476,6 +508,7 @@ class MusicRepository(
     suspend fun deleteBinding() {
         withContext(Dispatchers.IO) {
             File(context.filesDir, "music-cache").deleteRecursively()
+            File(context.cacheDir, "album-art").deleteRecursively()
             database.withTransaction {
                 database.nasDao().clear()
                 database.playHistoryDao().clear()
@@ -723,6 +756,44 @@ class MusicRepository(
         else -> "歌词加载失败，请稍后重试。"
     }
 
+    private fun extractEmbeddedCover(credentials: NasCredentials, track: TrackEntity): ByteArray? {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            val localFile = track.localCachePath
+                ?.let(::File)
+                ?.takeIf { it.exists() && it.length() > 0L }
+            if (localFile != null) {
+                retriever.setDataSource(localFile.absolutePath)
+            } else {
+                retriever.setDataSource(
+                    nasFileClient.urlFor(credentials, track.remotePath),
+                    mapOf(
+                        "Authorization" to Credentials.basic(
+                            credentials.username,
+                            credentials.password,
+                            Charsets.UTF_8,
+                        ),
+                    ),
+                )
+            }
+            retriever.embeddedPicture
+        } finally {
+            runCatching { retriever.release() }
+        }
+    }
+
+    private fun Bitmap.scaledToMaxEdge(maxEdge: Int): Bitmap {
+        val edge = maxOf(width, height)
+        if (edge <= maxEdge || edge <= 0) return this
+        val scale = maxEdge.toFloat() / edge.toFloat()
+        return Bitmap.createScaledBitmap(
+            this,
+            (width * scale).roundToInt().coerceAtLeast(1),
+            (height * scale).roundToInt().coerceAtLeast(1),
+            true,
+        )
+    }
+
     private fun chooseBetterFailure(
         current: WebDavResult.Failure?,
         candidate: WebDavResult.Failure?,
@@ -795,6 +866,8 @@ class MusicRepository(
     private companion object {
         const val ROOT_DISPLAY_PATH = "NAS 根目录"
         const val MAX_LYRICS_CACHE_SIZE = 48
+        const val COVER_MAX_EDGE_PX = 512
+        const val COVER_JPEG_QUALITY = 86
         val LRC_TIME_REGEX = Regex("""\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?]""")
         val LRC_METADATA_REGEX = Regex("""^\[[a-zA-Z]+:.*]$""")
         val COMMON_DIRECTORY_NAMES = setOf(

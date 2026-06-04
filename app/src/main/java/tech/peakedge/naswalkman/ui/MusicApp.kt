@@ -145,7 +145,7 @@ fun MusicApp(viewModel: AppViewModel) {
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            if (state.nasServer != null && state.selectedTab != MainTab.Player && state.selectedTab != MainTab.Settings) {
+            if (state.nasServer != null && state.selectedTab != MainTab.Player) {
                 Column {
                     MiniPlayer(state, viewModel)
                     BottomNavigation(state.selectedTab, viewModel::selectTab)
@@ -204,12 +204,6 @@ private fun BottomNavigation(selected: MainTab, onSelected: (MainTab) -> Unit) {
             onClick = { onSelected(MainTab.Library) },
             icon = { Icon(Icons.Rounded.LibraryMusic, contentDescription = "音乐库") },
             label = { Text("音乐库") },
-        )
-        NavigationBarItem(
-            selected = selected == MainTab.Folders,
-            onClick = { onSelected(MainTab.Folders) },
-            icon = { Icon(Icons.Rounded.Folder, contentDescription = "文件夹") },
-            label = { Text("文件夹") },
         )
         NavigationBarItem(
             selected = selected == MainTab.Player,
@@ -949,14 +943,66 @@ private fun RecentPlaybackCard(tracks: List<TrackEntity>, onClick: () -> Unit) {
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            val coverCount = if (tracks.isEmpty()) 5 else tracks.take(5).size
-            repeat(coverCount) {
-                AlbumCover(
-                    modifier = Modifier.size(52.dp),
-                    cornerRadius = 10.dp,
-                    iconSize = 22.dp,
-                )
+            if (tracks.isEmpty()) {
+                repeat(5) {
+                    AlbumCover(
+                        modifier = Modifier.size(52.dp),
+                        cornerRadius = 10.dp,
+                        iconSize = 22.dp,
+                    )
+                }
+            } else {
+                tracks.take(5).forEach { track ->
+                    AlbumCover(
+                        modifier = Modifier.size(52.dp),
+                        coverPath = track.coverCachePath,
+                        cornerRadius = 10.dp,
+                        iconSize = 22.dp,
+                    )
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun AllSongsSectionTitle(count: Int) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "全部歌曲",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(Modifier.width(8.dp))
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.56f))
+                .padding(horizontal = 8.dp, vertical = 3.dp),
+        ) {
+            Text(
+                "${count}首",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
+        }
+        Spacer(Modifier.weight(1f))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.AutoMirrored.Rounded.Sort,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+                "排序",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -1004,35 +1050,26 @@ private fun androidx.compose.foundation.lazy.LazyListScope.trackSection(
     viewModel: AppViewModel,
 ) {
     item {
-        AppSectionTitle(title) {
-            if (title == "全部歌曲") {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.AutoMirrored.Rounded.Sort,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        "排序",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
+        if (title == "全部歌曲") {
+            AllSongsSectionTitle(tracks.size)
+        } else {
+            AppSectionTitle(title)
         }
     }
     if (tracks.isEmpty()) {
         item {
+            val isAllSongs = title == "全部歌曲"
+            val isScanning = state.scanProgress.isRunning && isAllSongs
             EmptyStatePanel(
-                title = if (state.scanProgress.isRunning) {
+                title = if (isScanning) {
                     "正在扫描音乐库\n已发现 ${state.scanProgress.discovered} 首歌曲"
+                } else if (isAllSongs) {
+                    "音乐库为空\n请在设置中确认音乐目录，然后扫描音乐库"
                 } else {
-                    "当前目录没有发现音乐文件"
+                    emptyText
                 },
-                actionText = if (state.scanProgress.isRunning) null else "重新扫描",
-                onAction = if (state.scanProgress.isRunning) null else viewModel::scanLibrary,
+                actionText = if (isScanning || !isAllSongs) null else "扫描音乐库",
+                onAction = if (isScanning || !isAllSongs) null else viewModel::scanLibrary,
             )
         }
     } else {
@@ -1041,6 +1078,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.trackSection(
                 track = track,
                 playlists = state.playlists,
                 isCurrent = state.currentTrackId == track.id,
+                isPreparing = state.preparingTrackId == track.id,
                 onPlay = { viewModel.playTrack(track, tracks) },
                 onFavorite = { viewModel.toggleFavorite(track) },
                 onCache = { viewModel.cacheTrack(track) },
@@ -1138,6 +1176,7 @@ private fun PlayerScreen(state: AppUiState, viewModel: AppViewModel) {
                             .fillMaxWidth(0.84f)
                             .aspectRatio(1f)
                             .clickable(enabled = track != null) { viewModel.toggleLyricsMode() },
+                        coverPath = track?.coverCachePath,
                         cornerRadius = 24.dp,
                         iconSize = 92.dp,
                     )
@@ -1145,46 +1184,56 @@ private fun PlayerScreen(state: AppUiState, viewModel: AppViewModel) {
             }
         }
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.Top,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        track?.title ?: "还没有播放歌曲",
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        track?.artist ?: "从音乐库或文件夹选择一首歌",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            track?.title ?: "还没有播放歌曲",
+                            style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            track?.artist ?: "从音乐库或文件夹选择一首歌",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    if (track != null) {
+                        IconButton(onClick = { viewModel.toggleFavorite(track) }) {
+                            FavoriteIcon(isFavorite = track.isFavorite, modifier = Modifier.size(28.dp))
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         QualityChip("NAS")
                         QualityChip(if (track?.localCachePath != null) "已缓存" else "远程播放")
                     }
-                }
-                if (track != null) {
-                    IconButton(onClick = { viewModel.toggleFavorite(track) }) {
-                        FavoriteIcon(isFavorite = track.isFavorite, modifier = Modifier.size(28.dp))
-                    }
+                    LyricsToggleChip(
+                        showLyrics = state.showLyrics,
+                        enabled = track != null,
+                        onToggle = viewModel::toggleLyricsMode,
+                    )
                 }
             }
         }
         item {
             PlaybackProgress(state, onSeek = viewModel::seekTo)
-            LyricsToggleRow(
-                showLyrics = state.showLyrics,
-                enabled = track != null,
-                onToggle = viewModel::toggleLyricsMode,
-            )
         }
         item {
             Row(
@@ -1274,30 +1323,23 @@ private fun PlayerScreen(state: AppUiState, viewModel: AppViewModel) {
 }
 
 @Composable
-private fun LyricsToggleRow(
+private fun LyricsToggleChip(
     showLyrics: Boolean,
     enabled: Boolean,
     onToggle: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 4.dp),
-        horizontalArrangement = Arrangement.End,
-    ) {
-        AssistChip(
-            onClick = onToggle,
-            enabled = enabled,
-            label = { Text(if (showLyrics) "显示封面" else "显示歌词") },
-            leadingIcon = {
-                Icon(
-                    if (showLyrics) Icons.Rounded.LibraryMusic else Icons.Rounded.MusicNote,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-            },
-        )
-    }
+    AssistChip(
+        onClick = onToggle,
+        enabled = enabled,
+        label = { Text(if (showLyrics) "显示封面" else "显示歌词") },
+        leadingIcon = {
+            Icon(
+                if (showLyrics) Icons.Rounded.LibraryMusic else Icons.Rounded.MusicNote,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+        },
+    )
 }
 
 @Composable
@@ -1511,6 +1553,11 @@ private fun SettingsScreen(state: AppUiState, viewModel: AppViewModel) {
                     title = "音乐目录",
                     value = musicDirectory,
                     onClick = viewModel::openDirectoryPicker,
+                )
+                SettingRow(
+                    title = "NAS 文件夹",
+                    value = "浏览文件夹或手动进入目录",
+                    onClick = viewModel::openFolderBrowser,
                 )
                 SettingRow(
                     title = "重新连接",
@@ -1770,6 +1817,7 @@ private fun TrackRow(
     track: TrackEntity,
     playlists: List<PlaylistSummary>,
     isCurrent: Boolean,
+    isPreparing: Boolean,
     onPlay: () -> Unit,
     onFavorite: () -> Unit,
     onCache: () -> Unit,
@@ -1782,6 +1830,8 @@ private fun TrackRow(
             subtitle = listOfNotNull(track.artist, track.album).joinToString(" · ").ifBlank { track.fileName },
             duration = track.durationMs?.takeIf { it > 0L }?.let(::formatDuration) ?: "--:--",
             isCurrent = isCurrent,
+            isPreparing = isPreparing,
+            coverPath = track.coverCachePath,
             onClick = onPlay,
             onMore = { menuOpen = true },
         )
@@ -1846,6 +1896,7 @@ private fun MiniPlayer(state: AppUiState, viewModel: AppViewModel) {
     MiniPlayerBar(
         title = track.title,
         artist = track.artist.orEmpty(),
+        coverPath = track.coverCachePath,
         isPlaying = state.isPlaying,
         progress = progress,
         onOpen = { viewModel.selectTab(MainTab.Player) },

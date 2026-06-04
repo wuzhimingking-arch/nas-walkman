@@ -74,6 +74,9 @@ interface TrackDao {
     @Query("UPDATE tracks SET localCachePath = :path, updatedAt = :updatedAt WHERE id = :id")
     suspend fun updateCachePath(id: String, path: String?, updatedAt: Long)
 
+    @Query("UPDATE tracks SET coverCachePath = :path, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun updateCoverCachePath(id: String, path: String?, updatedAt: Long)
+
     @Query("UPDATE tracks SET localCachePath = NULL, updatedAt = :updatedAt")
     suspend fun clearAllCachePaths(updatedAt: Long)
 
