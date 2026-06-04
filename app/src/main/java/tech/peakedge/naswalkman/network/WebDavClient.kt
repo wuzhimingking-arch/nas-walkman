@@ -8,6 +8,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.xmlpull.v1.XmlPullParser
+import org.xmlpull.v1.XmlPullParserException
 import org.xmlpull.v1.XmlPullParserFactory
 import java.io.File
 import java.io.FileOutputStream
@@ -61,6 +62,8 @@ class WebDavClient(private val baseClient: OkHttpClient) {
                 404, 405, 501 -> WebDavResult.Failure("文件服务未开启或当前地址不是文件访问地址。请到飞牛 OS 的系统设置 > 文件共享协议 > WebDAV 开启服务，并确认共享目录权限。", error.code)
                 else -> WebDavResult.Failure("连接 NAS 失败，文件服务返回 HTTP ${error.code}。请检查 FN Connect、文件访问服务和地址配置。", error.code)
             }
+        } catch (error: WebDavUnexpectedResponseException) {
+            WebDavResult.Failure(unexpectedResponseMessage(error), error.code)
         } catch (_: UnknownHostException) {
             WebDavResult.Failure("无法找到这个 FN Connect 地址，请检查 FN ID 或远程访问地址。")
         } catch (_: SocketTimeoutException) {
@@ -90,6 +93,8 @@ class WebDavClient(private val baseClient: OkHttpClient) {
                 405, 501 -> WebDavResult.Failure("文件服务未开启或不支持目录读取。请到飞牛 OS 的系统设置 > 文件共享协议 > WebDAV 开启服务。", error.code)
                 else -> WebDavResult.Failure("已连接到 NAS，但暂时无法读取文件夹，文件服务返回 HTTP ${error.code}。", error.code)
             }
+        } catch (error: WebDavUnexpectedResponseException) {
+            WebDavResult.Failure(unexpectedResponseMessage(error), error.code)
         } catch (_: UnknownHostException) {
             WebDavResult.Failure("无法找到这个 FN Connect 地址，请检查 FN ID 或远程访问地址。")
         } catch (_: SocketTimeoutException) {
@@ -128,14 +133,55 @@ class WebDavClient(private val baseClient: OkHttpClient) {
                 .build()
             val response = clientFor(credentials).newCall(request).execute()
             response.use {
+                val contentType = it.body?.contentType()?.toString()
+                val text = it.body?.string().orEmpty()
                 if (!it.isSuccessful || it.code != 207) {
+                    val bodyKind = HttpBodyClassifier.classify(text, contentType)
+                    SafeHttpLog.event(
+                        name = "webdav.propfind.unexpected",
+                        url = request.url.toString(),
+                        status = it.code,
+                        bodyKind = bodyKind,
+                        contentType = contentType,
+                        setCookie = it.headers("Set-Cookie").joinToString(";"),
+                    )
+                    if (it.isSuccessful) {
+                        throw WebDavUnexpectedResponseException(
+                            code = it.code,
+                            bodyKind = bodyKind,
+                            contentType = contentType,
+                        )
+                    }
                     throw WebDavHttpException(it.code)
                 }
-                parseMultiStatus(
-                    xml = it.body?.string().orEmpty(),
-                    credentials = credentials,
-                    requestedPath = normalizeRemotePath(remotePath),
-                )
+                val bodyKind = HttpBodyClassifier.classify(text, contentType)
+                if (bodyKind != HttpBodyClassifier.WEBDAV_XML) {
+                    SafeHttpLog.event(
+                        name = "webdav.propfind.invalid-body",
+                        url = request.url.toString(),
+                        status = it.code,
+                        bodyKind = bodyKind,
+                        contentType = contentType,
+                        setCookie = it.headers("Set-Cookie").joinToString(";"),
+                    )
+                    throw WebDavUnexpectedResponseException(it.code, bodyKind, contentType)
+                }
+                try {
+                    parseMultiStatus(
+                        xml = text,
+                        credentials = credentials,
+                        requestedPath = normalizeRemotePath(remotePath),
+                    )
+                } catch (_: XmlPullParserException) {
+                    SafeHttpLog.event(
+                        name = "webdav.propfind.parse-failed",
+                        url = request.url.toString(),
+                        status = it.code,
+                        bodyKind = bodyKind,
+                        contentType = contentType,
+                    )
+                    throw WebDavUnexpectedResponseException(it.code, HttpBodyClassifier.UNKNOWN, contentType)
+                }
             }
         }
 
@@ -267,6 +313,18 @@ class WebDavClient(private val baseClient: OkHttpClient) {
     private fun XmlPullParser.localNameCompat(): String =
         (name ?: "").substringAfter(':').lowercase(Locale.ROOT)
 
+    private fun unexpectedResponseMessage(error: WebDavUnexpectedResponseException): String =
+        when (error.bodyKind) {
+            HttpBodyClassifier.HTML_OR_LOGIN ->
+                "文件接口返回 HTTP ${error.code}，但内容是登录页或 FN Connect 引导页，不是文件目录。请确认已开启 WebDAV/文件访问服务，并使用文件服务地址。"
+            HttpBodyClassifier.JSON ->
+                "文件接口返回 HTTP ${error.code}，但内容是 JSON 而不是 WebDAV 目录结构，可能是登录态或权限接口异常。"
+            HttpBodyClassifier.EMPTY ->
+                "文件接口返回 HTTP ${error.code}，但目录响应为空，可能文件服务未开启或路径不支持目录读取。"
+            else ->
+                "文件接口返回 HTTP ${error.code}，但不是预期的 WebDAV 目录结构，请检查文件服务版本或接口格式。"
+        }
+
     private fun decodeText(bytes: ByteArray): String {
         val utf8 = bytes.toString(Charsets.UTF_8).trimStart('\uFEFF')
         if ('\uFFFD' !in utf8) return utf8
@@ -297,6 +355,12 @@ class WebDavClient(private val baseClient: OkHttpClient) {
 }
 
 class WebDavHttpException(val code: Int) : Exception("WebDAV request failed with HTTP $code")
+
+class WebDavUnexpectedResponseException(
+    val code: Int,
+    val bodyKind: String,
+    val contentType: String?,
+) : Exception("WebDAV returned unexpected HTTP $code body=$bodyKind contentType=$contentType")
 
 object AudioFormats {
     private val supported = setOf("mp3", "flac", "m4a", "aac", "wav", "ogg", "opus")
