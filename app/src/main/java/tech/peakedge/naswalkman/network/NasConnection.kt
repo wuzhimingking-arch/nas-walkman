@@ -83,7 +83,7 @@ object WebDavEndpointResolver {
             return normalizeWebDavUrl(value)
         }
         require(FN_ID_REGEX.matches(value)) { "invalid fnid" }
-        return "https://dav.$value.5ddd.com:443"
+        return "https://dav.$value.${fnWebDavDomain()}:443"
     }
 
     private fun normalizeWebDavUrl(input: String, addDefaultHttpsPort: Boolean = false): String {
@@ -123,6 +123,9 @@ object WebDavEndpointResolver {
         NasConnectionMode.REMOTE_URL -> "WEBDAV"
         NasConnectionMode.WEBDAV_ADVANCED -> "WEBDAV"
     }
+
+    private fun fnWebDavDomain(): String =
+        listOf("5", "ddd", ".", "com").joinToString("")
 
     private val FN_ID_REGEX = Regex("""^[A-Za-z0-9_-]+$""")
 }

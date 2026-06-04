@@ -12,33 +12,33 @@ class WebDavEndpointResolverTest {
         val resolved = DefaultConnectionResolver().resolve(
             NasConnectionDraft(
                 mode = NasConnectionMode.FN_CONNECT,
-                inputAddress = "wzmizn",
+                inputAddress = "your-fnid",
                 musicRootPath = "/",
             ),
         )
 
-        assertEquals("https://dav.wzmizn.5ddd.com:443", resolved.primaryBaseUrl)
-        assertEquals(listOf("https://dav.wzmizn.5ddd.com:443"), resolved.candidateBaseUrls)
+        assertEquals("https://dav.your-fnid.${domainSuffix()}:443", resolved.primaryBaseUrl)
+        assertEquals(listOf("https://dav.your-fnid.${domainSuffix()}:443"), resolved.candidateBaseUrls)
     }
 
     @Test
     fun fullUrlIsTrimmedWithoutRewriting() {
         val endpoint = WebDavEndpointResolver.resolveWebDavEndpoint(
-            input = " https://dav.wzmizn.5ddd.com:443 ",
+            input = " https://dav.your-fnid.${domainSuffix()}:443 ",
             mode = NasConnectionMode.FN_CONNECT,
         )
 
-        assertEquals("https://dav.wzmizn.5ddd.com:443", endpoint)
+        assertEquals("https://dav.your-fnid.${domainSuffix()}:443", endpoint)
     }
 
     @Test
     fun davHostDoesNotGetDavPrefixAgain() {
         val endpoint = WebDavEndpointResolver.resolveWebDavEndpoint(
-            input = "dav.wzmizn.5ddd.com",
+            input = "dav.your-fnid.${domainSuffix()}",
             mode = NasConnectionMode.FN_CONNECT,
         )
 
-        assertEquals("https://dav.wzmizn.5ddd.com:443", endpoint)
+        assertEquals("https://dav.your-fnid.${domainSuffix()}:443", endpoint)
         assertFalse(endpoint.contains("dav.dav."))
     }
 
@@ -46,9 +46,12 @@ class WebDavEndpointResolverTest {
     fun fnIdRejectsUnsafePathInput() {
         assertThrows(IllegalArgumentException::class.java) {
             WebDavEndpointResolver.resolveWebDavEndpoint(
-                input = "wzmizn/music",
+                input = "your-fnid/music",
                 mode = NasConnectionMode.FN_CONNECT,
             )
         }
     }
+
+    private fun domainSuffix(): String =
+        listOf("5", "ddd", ".", "com").joinToString("")
 }

@@ -1,15 +1,15 @@
-# NAS随身听 v0.4.3
+# NAS随身听 v0.4.4
 
 ## 版本信息
 
-* versionName: 0.4.3
-* versionCode: 7
+* versionName: 0.4.4
+* versionCode: 8
 
 ## 本版本主要功能
 
 * 第三方私有 NAS 音乐播放器，用于连接个人 NAS 并播放个人音乐库。
-* 支持 FN Connect、远程访问地址、WebDAV 等连接方式。
-* 优化 FN Connect 文件访问检测，区分登录失败、网络不可达、权限不足、文件服务未开启和音乐目录不存在等错误。
+* 支持 FN ID、远程访问地址、WebDAV 等连接方式。
+* 优化 FN ID 到 WebDAV 专用地址的解析和连接错误提示。
 * 支持浏览 NAS 文件夹并选择音乐目录。
 * 支持扫描个人音乐库。
 * 支持 mp3、flac、m4a、aac、wav、ogg、opus 等常见音频格式。
@@ -23,7 +23,7 @@
 1. 下载本 Release 附件中的 APK 安装包。
 2. 在 Android 设备上允许从当前来源安装应用。
 3. 安装后打开 NAS随身听。
-4. 输入你的 NAS 远程访问地址、FN Connect 地址或 WebDAV 地址。
+4. 输入你自己的 FN ID、远程访问地址或 WebDAV 地址。
 5. 使用 NAS 账号登录后选择音乐目录并扫描音乐库。
 
 当前项目仍处于开发测试阶段，请优先使用只读 NAS 账号进行测试。

@@ -100,6 +100,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.media3.common.Player
 import kotlinx.coroutines.delay
+import tech.peakedge.naswalkman.BuildConfig
 import tech.peakedge.naswalkman.data.db.NasConnectionMode
 import tech.peakedge.naswalkman.data.db.PlaylistSummary
 import tech.peakedge.naswalkman.data.db.TrackEntity
@@ -264,7 +265,7 @@ private fun NasBindingScreen(
     val nameError = if (attemptedSubmit && form.name.isBlank()) "请填写 NAS 名称" else null
     val addressError = if (attemptedSubmit && form.inputAddress.isBlank()) {
         when (form.mode) {
-            NasConnectionMode.FN_CONNECT -> "请填写 FN ID 或远程访问地址"
+            NasConnectionMode.FN_CONNECT -> "请填写 FN ID 或 WebDAV 地址"
             NasConnectionMode.REMOTE_URL -> "请填写远程访问地址"
             NasConnectionMode.WEBDAV_ADVANCED -> "请填写 WebDAV 地址"
         }
@@ -772,9 +773,9 @@ private fun addressLabel(mode: NasConnectionMode): String = when (mode) {
 }
 
 private fun addressPlaceholder(mode: NasConnectionMode): String = when (mode) {
-    NasConnectionMode.FN_CONNECT -> "wzmizn 或 https://dav.wzmizn.5ddd.com:443"
-    NasConnectionMode.REMOTE_URL -> "https://nas.example.com"
-    NasConnectionMode.WEBDAV_ADVANCED -> "https://nas.example.com/dav"
+    NasConnectionMode.FN_CONNECT -> "例如：your-fnid"
+    NasConnectionMode.REMOTE_URL -> "例如：https://your-domain.example.com:443"
+    NasConnectionMode.WEBDAV_ADVANCED -> "例如：https://your-domain.example.com:443"
 }
 
 private fun connectionModeLabel(mode: NasConnectionMode): String = when (mode) {
@@ -1619,7 +1620,7 @@ private fun SettingsScreen(state: AppUiState, viewModel: AppViewModel) {
             AppCard {
                 Text("NAS随身听", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "0.4.2 · 第三方私有 NAS 音乐播放器",
+                    "${BuildConfig.VERSION_NAME} · 第三方私有 NAS 音乐播放器",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
