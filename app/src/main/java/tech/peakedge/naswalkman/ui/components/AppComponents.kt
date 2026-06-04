@@ -231,7 +231,7 @@ fun ConnectionModeSegmentedControl(
     modifier: Modifier = Modifier,
 ) {
     val modes = listOf(
-        NasConnectionMode.FN_CONNECT to "FN Connect",
+        NasConnectionMode.FN_CONNECT to "FN ID",
         NasConnectionMode.REMOTE_URL to "远程地址",
         NasConnectionMode.WEBDAV_ADVANCED to "WebDAV 高级",
     )

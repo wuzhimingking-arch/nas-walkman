@@ -1,6 +1,8 @@
 package tech.peakedge.naswalkman.network
 
+import android.util.Log
 import tech.peakedge.naswalkman.data.db.NasConnectionMode
+import java.net.URI
 import java.io.File
 
 data class NasConnectionDraft(
@@ -40,58 +42,89 @@ interface ConnectionResolver {
 
 class DefaultConnectionResolver : ConnectionResolver {
     override fun resolve(draft: NasConnectionDraft): ResolvedNasEndpoint =
-        when (draft.mode) {
-            NasConnectionMode.FN_CONNECT -> FnConnectResolver.resolve(draft)
+        WebDavEndpointResolver.resolve(draft)
+}
+
+object WebDavEndpointResolver {
+    fun resolve(draft: NasConnectionDraft): ResolvedNasEndpoint {
+        val input = draft.inputAddress.trim()
+        val endpoint = resolveWebDavEndpoint(input, draft.mode)
+        val wasFnIdOnly = draft.mode == NasConnectionMode.FN_CONNECT && input.isPlainFnId()
+        logResolved(draft.mode, if (wasFnIdOnly) "FNID" else "URL", endpoint)
+        return ResolvedNasEndpoint(
+            inputAddress = input,
+            primaryBaseUrl = endpoint,
+            candidateBaseUrls = listOf(endpoint),
+            wasFnIdOnly = wasFnIdOnly,
+        )
+    }
+
+    fun resolveWebDavEndpoint(input: String, mode: NasConnectionMode): String {
+        val trimmed = input.trim().trimEnd('/')
+        require(trimmed.isNotBlank()) { "empty endpoint" }
+        if (trimmed.isFullUrl()) return normalizeWebDavUrl(trimmed)
+
+        return when (mode) {
+            NasConnectionMode.FN_CONNECT -> resolveFnIdInput(trimmed)
             NasConnectionMode.REMOTE_URL,
             NasConnectionMode.WEBDAV_ADVANCED,
-            -> UrlResolver.resolve(draft)
+            -> normalizeWebDavUrl(trimmed)
         }
-}
+    }
 
-private object FnConnectResolver {
-    fun resolve(draft: NasConnectionDraft): ResolvedNasEndpoint {
-        val input = draft.inputAddress.trim()
-        if (input.isFullUrl()) {
-            val normalized = input.normalizeUrl()
-            return ResolvedNasEndpoint(
-                inputAddress = input,
-                primaryBaseUrl = normalized,
-                candidateBaseUrls = listOf(normalized),
-                wasFnIdOnly = false,
-            )
+    private fun resolveFnIdInput(input: String): String {
+        val value = input.trim().trim('/').removePrefix("@")
+        require(value.isNotBlank()) { "empty fnid" }
+        if (value.startsWith("dav.", ignoreCase = true)) {
+            return normalizeWebDavUrl(value, addDefaultHttpsPort = true)
         }
+        require(!value.contains("/")) { "invalid fnid" }
+        if (value.contains(".") || value.contains(":")) {
+            return normalizeWebDavUrl(value)
+        }
+        require(FN_ID_REGEX.matches(value)) { "invalid fnid" }
+        return "https://dav.$value.5ddd.com:443"
+    }
 
-        val fnId = input.trim().trim('/').removePrefix("@")
-        val candidates = if (fnId.contains(".") || fnId.contains(":")) {
-            listOf("https://$fnId")
+    private fun normalizeWebDavUrl(input: String, addDefaultHttpsPort: Boolean = false): String {
+        val withScheme = if (input.isFullUrl()) {
+            input.trim()
         } else {
-            listOf(
-                "https://dav.$fnId.fnos.net",
-                "https://dav.$fnId.fnos.net:443",
-                "https://$fnId.5ddd.com",
-                "https://$fnId",
-            )
-        }.distinct()
-        return ResolvedNasEndpoint(
-            inputAddress = input,
-            primaryBaseUrl = candidates.first(),
-            candidateBaseUrls = candidates,
-            wasFnIdOnly = true,
-        )
+            "https://${input.trim().trim('/')}"
+        }.trimEnd('/')
+        val uri = runCatching { URI(withScheme) }.getOrNull()
+            ?: throw IllegalArgumentException("invalid endpoint")
+        val scheme = uri.scheme?.lowercase()
+        require(scheme == "http" || scheme == "https") { "invalid scheme" }
+        require(!uri.host.isNullOrBlank()) { "invalid host" }
+        if (addDefaultHttpsPort && scheme == "https" && uri.port == -1) {
+            val authority = uri.rawAuthority ?: throw IllegalArgumentException("invalid host")
+            return withScheme.replaceFirst("://${authority}", "://${authority}:443")
+        }
+        return withScheme
     }
-}
 
-private object UrlResolver {
-    fun resolve(draft: NasConnectionDraft): ResolvedNasEndpoint {
-        val input = draft.inputAddress.trim()
-        val normalized = if (input.isFullUrl()) input.normalizeUrl() else "https://${input.trim('/')}"
-        return ResolvedNasEndpoint(
-            inputAddress = input,
-            primaryBaseUrl = normalized,
-            candidateBaseUrls = listOf(normalized),
-            wasFnIdOnly = false,
-        )
+    private fun String.isPlainFnId(): Boolean {
+        val value = trim().trim('/').removePrefix("@")
+        return !value.isFullUrl() && FN_ID_REGEX.matches(value)
     }
+
+    private fun logResolved(mode: NasConnectionMode, inputKind: String, resolved: String) {
+        runCatching {
+            Log.d(
+                "WebDavResolver",
+                "mode=${mode.logName()} inputKind=$inputKind resolved=$resolved",
+            )
+        }
+    }
+
+    private fun NasConnectionMode.logName(): String = when (this) {
+        NasConnectionMode.FN_CONNECT -> "FN_ID"
+        NasConnectionMode.REMOTE_URL -> "WEBDAV"
+        NasConnectionMode.WEBDAV_ADVANCED -> "WEBDAV"
+    }
+
+    private val FN_ID_REGEX = Regex("""^[A-Za-z0-9_-]+$""")
 }
 
 interface NasFileClient {
@@ -164,5 +197,3 @@ class WebDavNasFileClient(private val webDavClient: WebDavClient) : NasFileClien
 
 private fun String.isFullUrl(): Boolean =
     startsWith("https://", ignoreCase = true) || startsWith("http://", ignoreCase = true)
-
-private fun String.normalizeUrl(): String = trim().trimEnd('/')

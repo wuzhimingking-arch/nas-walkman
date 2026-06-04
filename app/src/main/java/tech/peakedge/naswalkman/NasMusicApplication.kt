@@ -12,7 +12,6 @@ import tech.peakedge.naswalkman.network.BasicAuthInterceptor
 import tech.peakedge.naswalkman.network.DefaultConnectionResolver
 import tech.peakedge.naswalkman.network.DatabaseCredentialsProvider
 import tech.peakedge.naswalkman.network.DigestAuthenticator
-import tech.peakedge.naswalkman.network.FnConnectClient
 import tech.peakedge.naswalkman.network.InMemoryCookieJar
 import tech.peakedge.naswalkman.network.WebDavClient
 import tech.peakedge.naswalkman.network.WebDavNasFileClient
@@ -37,7 +36,7 @@ class AppContainer(context: Context) {
     private val credentialsProvider = DatabaseCredentialsProvider(database.nasDao(), credentialCipher)
     val okHttpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(45, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(45, TimeUnit.SECONDS)
         .cookieJar(InMemoryCookieJar())
         .addInterceptor(BasicAuthInterceptor(credentialsProvider))
@@ -49,7 +48,6 @@ class AppContainer(context: Context) {
         database = database,
         credentialCipher = credentialCipher,
         connectionResolver = DefaultConnectionResolver(),
-        fnConnectClient = FnConnectClient(okHttpClient),
         nasFileClient = WebDavNasFileClient(WebDavClient(okHttpClient)),
         settingsStore = settingsStore,
     )

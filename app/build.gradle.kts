@@ -115,4 +115,6 @@ dependencies {
     implementation("androidx.media3:media3-datasource-okhttp:1.5.1")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    testImplementation("junit:junit:4.13.2")
 }

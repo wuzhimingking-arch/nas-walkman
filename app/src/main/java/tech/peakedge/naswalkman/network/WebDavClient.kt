@@ -57,27 +57,27 @@ class WebDavClient(private val baseClient: OkHttpClient) {
             )
         } catch (error: WebDavHttpException) {
             when (error.code) {
-                401 -> WebDavResult.Failure("登录失败，请检查 NAS 用户名或密码。", error.code)
-                403 -> WebDavResult.Failure("权限不足，当前账号无法访问文件服务。请到飞牛 OS 为该账号开启文件访问或共享目录权限。", error.code)
-                404, 405, 501 -> WebDavResult.Failure("文件服务未开启或当前地址不是文件访问地址。请到飞牛 OS 的系统设置 > 文件共享协议 > WebDAV 开启服务，并确认共享目录权限。", error.code)
-                else -> WebDavResult.Failure("连接 NAS 失败，文件服务响应异常（HTTP ${error.code}）。请检查 FN Connect、文件访问服务和地址配置。", error.code)
+                401, 403 -> WebDavResult.Failure("账号或密码错误，或该账号没有 WebDAV 访问权限。", error.code)
+                404 -> WebDavResult.Failure("WebDAV 路径不存在，请检查音乐目录。", error.code)
+                405, 501 -> WebDavResult.Failure("当前地址不是 WebDAV 服务地址，请检查 FNID 解析结果或 WebDAV 地址。", error.code)
+                else -> WebDavResult.Failure("连接 NAS 失败，WebDAV 服务响应异常（HTTP ${error.code}）。", error.code)
             }
         } catch (error: WebDavUnexpectedResponseException) {
             WebDavResult.Failure(unexpectedResponseMessage(error), error.code)
         } catch (_: UnknownHostException) {
-            WebDavResult.Failure("无法找到这个 FN Connect 地址，请检查 FN ID 或远程访问地址。")
+            WebDavResult.Failure("无法访问服务器，请检查网络或 FNID 是否正确。")
         } catch (_: SocketTimeoutException) {
-            WebDavResult.Failure("网络不可达或连接超时，可能是网络较慢、NAS 休眠或 FN Connect 当前不稳定。")
+            WebDavResult.Failure("连接超时，请稍后重试或检查 NAS 远程访问状态。")
         } catch (_: SSLHandshakeException) {
-            WebDavResult.Failure("安全证书校验失败，请检查访问地址是否正确。")
+            WebDavResult.Failure("无法访问服务器，请检查网络或 FNID 是否正确。")
         } catch (_: SSLException) {
-            WebDavResult.Failure("安全连接失败，请检查访问地址或证书配置。")
+            WebDavResult.Failure("无法访问服务器，请检查网络或 FNID 是否正确。")
         } catch (_: ConnectException) {
-            WebDavResult.Failure("网络不可达，NAS 拒绝连接。请检查 FN Connect 或文件访问服务是否开启。")
+            WebDavResult.Failure("无法访问服务器，请检查网络或 FNID 是否正确。")
         } catch (_: IllegalArgumentException) {
-            WebDavResult.Failure("请填写有效的 FN Connect 地址或远程访问地址。")
+            WebDavResult.Failure("连接地址解析失败，请检查 FNID 或 WebDAV 地址。")
         } catch (_: Exception) {
-            WebDavResult.Failure("网络不可达，无法连接 NAS。请检查 FN Connect 是否开启或当前网络是否可用。")
+            WebDavResult.Failure("无法访问服务器，请检查网络或 FNID 是否正确。")
         }
     }
 
@@ -87,28 +87,27 @@ class WebDavClient(private val baseClient: OkHttpClient) {
             WebDavResult.Success()
         } catch (error: WebDavHttpException) {
             when (error.code) {
-                401 -> WebDavResult.Failure("登录失败，请检查 NAS 用户名或密码。", error.code)
-                403 -> WebDavResult.Failure("当前账号没有该目录权限，请到飞牛 OS 为该账号授权共享目录。", error.code)
-                404 -> WebDavResult.Failure("音乐目录不存在，请重新选择目录或确认路径是否正确。", error.code)
-                405, 501 -> WebDavResult.Failure("文件服务未开启或不支持目录读取。请到飞牛 OS 的系统设置 > 文件共享协议 > WebDAV 开启服务。", error.code)
-                else -> WebDavResult.Failure("已连接到 NAS，但暂时无法读取文件夹，文件服务响应异常（HTTP ${error.code}）。", error.code)
+                401, 403 -> WebDavResult.Failure("账号或密码错误，或该账号没有 WebDAV 访问权限。", error.code)
+                404 -> WebDavResult.Failure("WebDAV 路径不存在，请检查音乐目录。", error.code)
+                405, 501 -> WebDavResult.Failure("当前地址不是 WebDAV 服务地址，请检查 FNID 解析结果或 WebDAV 地址。", error.code)
+                else -> WebDavResult.Failure("已连接到 NAS，但暂时无法读取文件夹，WebDAV 服务响应异常（HTTP ${error.code}）。", error.code)
             }
         } catch (error: WebDavUnexpectedResponseException) {
             WebDavResult.Failure(unexpectedResponseMessage(error), error.code)
         } catch (_: UnknownHostException) {
-            WebDavResult.Failure("无法找到这个 FN Connect 地址，请检查 FN ID 或远程访问地址。")
+            WebDavResult.Failure("无法访问服务器，请检查网络或 FNID 是否正确。")
         } catch (_: SocketTimeoutException) {
-            WebDavResult.Failure("网络不可达或连接超时，可能是 NAS 休眠、网络较慢或远程访问不稳定。")
+            WebDavResult.Failure("连接超时，请稍后重试或检查 NAS 远程访问状态。")
         } catch (_: SSLHandshakeException) {
-            WebDavResult.Failure("安全证书校验失败，请检查访问地址是否正确。")
+            WebDavResult.Failure("无法访问服务器，请检查网络或 FNID 是否正确。")
         } catch (_: SSLException) {
-            WebDavResult.Failure("安全连接失败，请检查访问地址或证书配置。")
+            WebDavResult.Failure("无法访问服务器，请检查网络或 FNID 是否正确。")
         } catch (_: ConnectException) {
-            WebDavResult.Failure("网络不可达，NAS 拒绝连接。请检查远程访问服务是否开启。")
+            WebDavResult.Failure("无法访问服务器，请检查网络或 FNID 是否正确。")
         } catch (_: IllegalArgumentException) {
-            WebDavResult.Failure("路径解析失败，请重新进入目录选择器选择文件夹。")
+            WebDavResult.Failure("连接地址解析失败，请检查 FNID 或 WebDAV 地址。")
         } catch (_: Exception) {
-            WebDavResult.Failure("已连接到 NAS，但暂时无法读取文件夹。请确认飞牛 NAS 已开启文件访问服务，并给当前账号授权共享目录。")
+            WebDavResult.Failure("已连接到 NAS，但暂时无法读取文件夹。请检查 WebDAV 地址和音乐目录。")
         }
     }
 
@@ -184,11 +183,23 @@ class WebDavClient(private val baseClient: OkHttpClient) {
                     )
                 }
                 try {
-                    parseMultiStatus(
+                    val items = parseMultiStatus(
                         xml = text,
                         credentials = credentials,
                         requestedPath = normalizeRemotePath(remotePath),
                     )
+                    SafeHttpLog.event(
+                        name = "webdav.propfind.success path=${normalizeRemotePath(remotePath)} items=${items.size}",
+                        url = request.url.toString(),
+                        finalUrl = it.request.url.toString(),
+                        redirected = it.priorResponse != null,
+                        status = it.code,
+                        bodyKind = diagnosis.kind,
+                        bodyReason = diagnosis.reason,
+                        contentType = contentType,
+                        requestCookie = it.request.header("Cookie"),
+                    )
+                    items
                 } catch (_: XmlPullParserException) {
                     SafeHttpLog.event(
                         name = "webdav.propfind.parse-failed",

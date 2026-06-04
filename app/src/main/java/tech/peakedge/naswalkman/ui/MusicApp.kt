@@ -292,7 +292,7 @@ private fun NasBindingScreen(
                 fontWeight = FontWeight.Bold,
             )
             Text(
-                "通过 FN Connect 远程播放家里 NAS 中的音乐",
+                "通过 FN ID 或 WebDAV 播放家里 NAS 中的音乐",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -346,7 +346,7 @@ private fun NasBindingScreen(
                     !form.inputAddress.startsWith("http", ignoreCase = true)
                 ) {
                     Text(
-                        "FN Connect 负责远程连接，音乐目录读取仍需要飞牛 OS 开启文件共享/WebDAV 服务。",
+                        "FN ID 会自动解析为 WebDAV 专用地址，目录读取仍需要飞牛 OS 开启 WebDAV 并授权共享目录。",
                         modifier = Modifier.padding(horizontal = 4.dp),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -743,13 +743,13 @@ private fun FnIdHelpDialog(onDismiss: () -> Unit) {
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("1. 打开飞牛 fnOS 或飞牛 App。")
-                Text("2. 确认已经开启 FN Connect 远程访问。")
-                Text("3. 在系统设置 > 文件共享协议 > WebDAV 开启文件访问服务。")
+                Text("2. 在系统设置 > 文件共享协议 > WebDAV 开启文件访问服务。")
+                Text("3. 确认 WebDAV 远程访问域名可用。")
                 Text("4. 在共享目录或用户权限里，给当前账号授权音乐目录。")
-                Text("5. 回到本 App，输入 FN ID、远程访问地址或 WebDAV 地址。")
+                Text("5. 回到本 App，输入 FN ID 或 WebDAV 地址。")
                 Text("6. 再填写 NAS 的用户名和密码，并选择音乐目录。")
                 Text(
-                    "FN Connect 只负责远程连接，音乐文件读取仍依赖飞牛 OS 文件访问服务。不同系统版本的入口可能略有差异。",
+                    "FN ID 会自动解析为 WebDAV 专用地址，音乐文件读取走 WebDAV 协议。不同系统版本的入口可能略有差异。",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -760,25 +760,25 @@ private fun FnIdHelpDialog(onDismiss: () -> Unit) {
 }
 
 private fun connectionModeDescription(mode: NasConnectionMode): String = when (mode) {
-    NasConnectionMode.FN_CONNECT -> "推荐。输入 FN ID 或 FN Connect 地址；文件读取仍需要飞牛 OS 开启 WebDAV/文件共享并授权目录。"
+    NasConnectionMode.FN_CONNECT -> "推荐。输入 FN ID 后自动连接 WebDAV 专用地址；需要飞牛 OS 开启 WebDAV 并授权目录。"
     NasConnectionMode.REMOTE_URL -> "适合已经配置公网 IP、DDNS、反向代理或 HTTPS 域名的用户。"
     NasConnectionMode.WEBDAV_ADVANCED -> "适合已经知道文件访问服务如何配置的高级用户。"
 }
 
 private fun addressLabel(mode: NasConnectionMode): String = when (mode) {
-    NasConnectionMode.FN_CONNECT -> "FN ID 或 FN Connect 远程访问地址"
+    NasConnectionMode.FN_CONNECT -> "FN ID 或 WebDAV 地址"
     NasConnectionMode.REMOTE_URL -> "访问地址"
     NasConnectionMode.WEBDAV_ADVANCED -> "WebDAV 地址"
 }
 
 private fun addressPlaceholder(mode: NasConnectionMode): String = when (mode) {
-    NasConnectionMode.FN_CONNECT -> "myfnid 或 https://dav.myfnid.fnos.net"
+    NasConnectionMode.FN_CONNECT -> "wzmizn 或 https://dav.wzmizn.5ddd.com:443"
     NasConnectionMode.REMOTE_URL -> "https://nas.example.com"
     NasConnectionMode.WEBDAV_ADVANCED -> "https://nas.example.com/dav"
 }
 
 private fun connectionModeLabel(mode: NasConnectionMode): String = when (mode) {
-    NasConnectionMode.FN_CONNECT -> "FN Connect"
+    NasConnectionMode.FN_CONNECT -> "FN ID"
     NasConnectionMode.REMOTE_URL -> "远程地址"
     NasConnectionMode.WEBDAV_ADVANCED -> "WebDAV 高级"
 }
@@ -1623,7 +1623,7 @@ private fun SettingsScreen(state: AppUiState, viewModel: AppViewModel) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    "NAS随身听是一款用于播放个人 NAS 音乐文件的私有音乐播放器，支持通过远程访问地址、FN Connect、WebDAV 等方式连接自己的 NAS，随时播放家里的音乐。",
+                    "NAS随身听是一款用于播放个人 NAS 音乐文件的私有音乐播放器，支持通过 FN ID、远程访问地址、WebDAV 等方式连接自己的 NAS，随时播放家里的音乐。",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -1709,7 +1709,7 @@ private fun NasInlineEditor(
                 Text("哪里找 FN ID？")
             }
             Text(
-                "FN Connect 负责远程连接，音乐目录读取仍需要飞牛 OS 开启文件共享/WebDAV 服务。",
+                "FN ID 会自动解析为 WebDAV 专用地址，目录读取仍需要飞牛 OS 开启 WebDAV 并授权共享目录。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

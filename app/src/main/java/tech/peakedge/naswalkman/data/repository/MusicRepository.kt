@@ -11,8 +11,6 @@ import tech.peakedge.naswalkman.data.db.PlaylistEntity
 import tech.peakedge.naswalkman.data.db.PlaylistTrackEntity
 import tech.peakedge.naswalkman.data.db.TrackEntity
 import tech.peakedge.naswalkman.network.ConnectionResolver
-import tech.peakedge.naswalkman.network.FnConnectClient
-import tech.peakedge.naswalkman.network.FnConnectException
 import tech.peakedge.naswalkman.network.HttpBodyClassifier
 import tech.peakedge.naswalkman.network.NasConnectionDraft
 import tech.peakedge.naswalkman.network.NasCredentials
@@ -95,7 +93,6 @@ class MusicRepository(
     private val database: AppDatabase,
     private val credentialCipher: CredentialCipher,
     private val connectionResolver: ConnectionResolver,
-    private val fnConnectClient: FnConnectClient,
     private val nasFileClient: NasFileClient,
     val settingsStore: SettingsStore,
 ) {
@@ -192,10 +189,10 @@ class MusicRepository(
         val normalized = form.normalized()
         val candidates = try {
             credentialsCandidatesForForm(normalized)
-        } catch (error: FnConnectException) {
-            return DirectoryBrowserResult.Failure(error.message ?: "FN Connect 查询失败，请稍后重试。")
+        } catch (_: IllegalArgumentException) {
+            return DirectoryBrowserResult.Failure("连接地址解析失败，请检查 FNID 或 WebDAV 地址。")
         }
-        var lastFailure: String = "已连接到 NAS，但暂时无法读取文件夹。请确认飞牛 NAS 已开启文件访问服务，或尝试使用完整远程访问地址。"
+        var lastFailure: String = "已连接到 NAS，但暂时无法读取文件夹。请检查 WebDAV 地址和音乐目录权限。"
         for (credentials in candidates) {
             try {
                 val directories = nasFileClient.listDirectories(credentials, remotePath)
@@ -237,27 +234,17 @@ class MusicRepository(
     private suspend fun testResolvedConnection(normalized: NasForm): ConnectionAttempt {
         val resolved = connectionResolver.resolve(normalized.toConnectionDraft())
         var lastFailure: WebDavResult.Failure? = null
-        var result: WebDavResult = WebDavResult.Failure("无法连接 NAS，请检查 FN Connect 是否开启或当前网络是否可用。")
+        var result: WebDavResult = WebDavResult.Failure("无法连接 NAS，请检查 FNID、WebDAV 地址或当前网络是否可用。")
         var successfulBaseUrl: String? = null
         val candidates = try {
             credentialsCandidatesForForm(normalized).map { it.copy(musicRootPath = "/") }
-        } catch (error: FnConnectException) {
+        } catch (_: IllegalArgumentException) {
             return ConnectionAttempt(
-                result = WebDavResult.Failure(error.message ?: "FN Connect 查询失败，请稍后重试。"),
+                result = WebDavResult.Failure("连接地址解析失败，请检查 FNID 或 WebDAV 地址。"),
                 successfulBaseUrl = null,
             )
         }
         for (credentials in candidates) {
-            if (normalized.mode == NasConnectionMode.FN_CONNECT && resolved.wasFnIdOnly) {
-                val sessionCheck = fnConnectClient.checkEndpoint(credentials.baseUrl)
-                if (!sessionCheck.isReachable) {
-                    lastFailure = chooseBetterFailure(
-                        lastFailure,
-                        WebDavResult.Failure(sessionCheck.message ?: "FN Connect 会话检查失败。"),
-                    )
-                    continue
-                }
-            }
             result = nasFileClient.testConnection(credentials)
             if (result is WebDavResult.Success) {
                 successfulBaseUrl = credentials.baseUrl
@@ -266,8 +253,7 @@ class MusicRepository(
             lastFailure = chooseBetterFailure(lastFailure, result as? WebDavResult.Failure)
         }
         if (result !is WebDavResult.Success && normalized.mode == NasConnectionMode.FN_CONNECT && resolved.wasFnIdOnly) {
-            result = lastFailure?.withFnConnectContext()
-                ?: WebDavResult.Failure(fnConnectFileAccessHelp("已识别 FN ID，但暂时无法读取文件目录。"))
+            result = lastFailure ?: WebDavResult.Failure("FNID 已解析为 WebDAV 地址，但暂时无法读取文件目录。")
         } else if (result !is WebDavResult.Success) {
             lastFailure?.let { result = it }
         }
@@ -295,9 +281,9 @@ class MusicRepository(
         var successfulRemotePath: String? = null
         val candidates = try {
             credentialsCandidatesForForm(normalized)
-        } catch (error: FnConnectException) {
+        } catch (_: IllegalArgumentException) {
             return ConnectionAttempt(
-                result = WebDavResult.Failure(error.message ?: "FN Connect 查询失败，请稍后重试。"),
+                result = WebDavResult.Failure("连接地址解析失败，请检查 FNID 或 WebDAV 地址。"),
                 successfulBaseUrl = null,
             )
         }
@@ -309,16 +295,6 @@ class MusicRepository(
                 }
             }
         for (credentials in candidates) {
-            if (normalized.mode == NasConnectionMode.FN_CONNECT && resolved.wasFnIdOnly) {
-                val sessionCheck = fnConnectClient.checkEndpoint(credentials.baseUrl)
-                if (!sessionCheck.isReachable) {
-                    lastFailure = chooseBetterFailure(
-                        lastFailure,
-                        WebDavResult.Failure(sessionCheck.message ?: "FN Connect 会话检查失败。"),
-                    )
-                    continue
-                }
-            }
             for (candidatePath in pathCandidates) {
                 result = nasFileClient.testDirectory(credentials, candidatePath)
                 if (result is WebDavResult.Success) {
@@ -331,8 +307,7 @@ class MusicRepository(
             if (result is WebDavResult.Success) break
         }
         if (result !is WebDavResult.Success && normalized.mode == NasConnectionMode.FN_CONNECT && resolved.wasFnIdOnly) {
-            result = lastFailure?.withFnConnectContext()
-                ?: WebDavResult.Failure(fnConnectFileAccessHelp("已识别 FN ID，但无法访问音乐目录。"))
+            result = lastFailure ?: WebDavResult.Failure("FNID 已解析为 WebDAV 地址，但无法访问音乐目录。")
         } else if (result !is WebDavResult.Success) {
             lastFailure?.let { result = it }
         }
@@ -512,7 +487,7 @@ class MusicRepository(
 
     private fun validateConnectionForm(form: NasForm, allowStoredPassword: Boolean): String? = when {
         form.inputAddress.isBlank() -> when (form.mode) {
-            NasConnectionMode.FN_CONNECT -> "请填写 FN ID 或 FN Connect 远程访问地址"
+            NasConnectionMode.FN_CONNECT -> "请填写 FN ID 或 WebDAV 地址"
             NasConnectionMode.REMOTE_URL -> "请填写访问地址"
             NasConnectionMode.WEBDAV_ADVANCED -> "请填写连接地址"
         }
@@ -553,11 +528,7 @@ class MusicRepository(
             return listOf(current)
         }
         val resolved = connectionResolver.resolve(form.toConnectionDraft())
-        val candidateBaseUrls = if (form.mode == NasConnectionMode.FN_CONNECT && resolved.wasFnIdOnly) {
-            dynamicFnConnectCandidates(resolved.inputAddress, resolved.candidateBaseUrls)
-        } else {
-            resolved.candidateBaseUrls
-        }
+        val candidateBaseUrls = resolved.candidateBaseUrls
         return candidateBaseUrls.distinct().map { candidate ->
             NasCredentials(
                 serverId = current?.serverId ?: 1L,
@@ -568,9 +539,6 @@ class MusicRepository(
             )
         }
     }
-
-    private suspend fun dynamicFnConnectCandidates(inputAddress: String, fallback: List<String>): List<String> =
-        fnConnectClient.resolve(inputAddress).candidates.map { it.baseUrl } + fallback
 
     private data class ConnectionAttempt(
         val result: WebDavResult,
@@ -622,26 +590,25 @@ class MusicRepository(
 
     private fun browsingErrorMessage(error: Exception): String = when (error) {
         is WebDavHttpException -> when (error.code) {
-            401 -> "登录失败，请检查 NAS 用户名或密码。"
-            403 -> "当前账号没有该目录权限，请到飞牛 OS 为该账号授权共享目录。"
-            404 -> "音乐目录不存在，请重新选择目录或确认路径是否正确。"
-            405, 501 -> "文件服务未开启或不支持目录读取。请到飞牛 OS 的系统设置 > 文件共享协议 > WebDAV 开启服务。"
-            else -> "已连接到 NAS，但暂时无法读取文件夹，文件服务返回 HTTP ${error.code}。"
+            401, 403 -> "账号或密码错误，或该账号没有 WebDAV 访问权限。"
+            404 -> "WebDAV 路径不存在，请检查音乐目录。"
+            405, 501 -> "当前地址不是 WebDAV 服务地址，请检查 FNID 解析结果或 WebDAV 地址。"
+            else -> "已连接到 NAS，但暂时无法读取文件夹，WebDAV 服务响应异常（HTTP ${error.code}）。"
         }
         is WebDavUnexpectedResponseException -> unexpectedDirectoryMessage(error)
-        is UnknownHostException -> "无法找到这个 FN Connect 地址，请检查 FN ID 或远程访问地址。"
-        is SocketTimeoutException -> "网络不可达或连接超时，可能是 NAS 休眠、网络较慢或远程访问不稳定。"
-        is SSLHandshakeException -> "安全证书校验失败，请检查访问地址是否正确。"
-        is SSLException -> "安全连接失败，请检查访问地址或证书配置。"
-        is ConnectException -> "网络不可达，NAS 拒绝连接。请检查远程访问服务是否开启。"
-        else -> "已连接到 NAS，但暂时无法读取文件夹。请确认飞牛 NAS 已开启文件访问服务，并给当前账号授权共享目录。"
+        is UnknownHostException -> "无法访问服务器，请检查网络或 FNID 是否正确。"
+        is SocketTimeoutException -> "连接超时，请稍后重试或检查 NAS 远程访问状态。"
+        is SSLHandshakeException -> "无法访问服务器，请检查网络或 FNID 是否正确。"
+        is SSLException -> "无法访问服务器，请检查网络或 FNID 是否正确。"
+        is ConnectException -> "无法访问服务器，请检查网络或 FNID 是否正确。"
+        else -> "已连接到 NAS，但暂时无法读取文件夹。请检查 WebDAV 地址和音乐目录权限。"
     }
 
     private fun unexpectedDirectoryMessage(error: WebDavUnexpectedResponseException): String {
         val reason = error.diagnosis.reason
         return when {
             reason.startsWith("fn-connect-page") ->
-                "返回的是 FN Connect 远程访问引导页，不是文件目录。请开启 WebDAV/文件访问服务，并使用 WebDAV 文件服务地址。"
+                "返回的是 FN Connect 远程访问引导页，不是 WebDAV 目录。请检查 FNID 解析结果或 WebDAV 地址。"
             reason.startsWith("login-page") ->
                 "返回的是登录页，登录态失效或文件服务需要网页登录，请重新登录。"
             reason.startsWith("captcha-page") ->
@@ -756,17 +723,6 @@ class MusicRepository(
         else -> "歌词加载失败，请稍后重试。"
     }
 
-    private fun WebDavResult.Failure.withFnConnectContext(): WebDavResult.Failure = when (code) {
-        401 -> this
-        403 -> copy(message = "权限不足，FN Connect 已尝试连接，但当前账号没有文件访问或共享目录权限。请到飞牛 OS 为该账号授权共享目录。")
-        404, 405, 501 -> copy(message = fnConnectFileAccessHelp("FN Connect 已尝试连接，但文件服务未开启或当前地址不是文件访问地址。"))
-        else -> if (code == null) {
-            copy(message = fnConnectFileAccessHelp(message))
-        } else {
-            copy(message = "$message\nFN Connect 只负责远程连接，音乐文件读取仍需要飞牛 OS 文件访问服务。")
-        }
-    }
-
     private fun chooseBetterFailure(
         current: WebDavResult.Failure?,
         candidate: WebDavResult.Failure?,
@@ -785,9 +741,6 @@ class MusicRepository(
         null -> 10
         else -> 50
     }
-
-    private fun fnConnectFileAccessHelp(prefix: String): String =
-        "$prefix\nFN Connect 只负责远程连接，音乐文件读取仍需要文件访问服务。请到飞牛 OS 的系统设置 > 文件共享协议 > WebDAV 开启服务，并给当前账号授权音乐共享目录。"
 
     private fun parentRemotePath(remotePath: String): String {
         val normalized = normalizeRemotePath(remotePath)
