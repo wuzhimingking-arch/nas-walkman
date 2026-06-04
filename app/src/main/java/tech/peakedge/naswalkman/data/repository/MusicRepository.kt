@@ -24,6 +24,7 @@ import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.security.MessageDigest
+import java.util.Locale
 import javax.net.ssl.SSLException
 import javax.net.ssl.SSLHandshakeException
 import kotlinx.coroutines.Dispatchers
@@ -66,6 +67,25 @@ sealed class DirectoryBrowserResult {
     data class Failure(val message: String) : DirectoryBrowserResult()
 }
 
+data class LyricLine(
+    val timeMs: Long?,
+    val text: String,
+)
+
+data class LyricsContent(
+    val sourceFileName: String,
+    val lines: List<LyricLine>,
+) {
+    val hasTimeline: Boolean
+        get() = lines.any { it.timeMs != null }
+}
+
+sealed class LyricsLoadResult {
+    data class Found(val lyrics: LyricsContent) : LyricsLoadResult()
+    data object NotFound : LyricsLoadResult()
+    data class Failure(val message: String) : LyricsLoadResult()
+}
+
 class MusicRepository(
     private val context: Context,
     private val database: AppDatabase,
@@ -80,6 +100,10 @@ class MusicRepository(
     val recent: Flow<List<TrackEntity>> = database.trackDao().observeRecent()
     val playlists = database.playlistDao().observePlaylists()
     val cacheBytes = database.cacheDao().observeCacheBytes()
+    private val lyricsCache = object : LinkedHashMap<String, LyricsLoadResult>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, LyricsLoadResult>?): Boolean =
+            size > MAX_LYRICS_CACHE_SIZE
+    }
 
     fun search(query: String): Flow<List<TrackEntity>> = database.trackDao().search(query)
 
@@ -93,6 +117,12 @@ class MusicRepository(
         val resolved = connectionResolver.resolve(normalized.toConnectionDraft())
         val successfulBaseUrl = attempt.successfulBaseUrl ?: resolved.primaryBaseUrl
         val selectedPath = normalized.effectiveMusicPath()
+        val directoryAttempt = testResolvedDirectory(
+            normalized = normalized,
+            remotePath = selectedPath,
+            preferredBaseUrl = successfulBaseUrl,
+        )
+        if (directoryAttempt.result !is WebDavResult.Success) return directoryAttempt.result
         val selectedDisplayPath = normalized.selectedMusicDisplayPath
             .ifBlank { nasFileClient.getDisplayPath(selectedPath) }
         val selectedFolderName = normalized.selectedMusicFolderName
@@ -184,11 +214,11 @@ class MusicRepository(
         val existing = database.nasDao().getActiveNas()
         validateConnectionForm(form, allowStoredPassword = existing?.canUseStoredPasswordFor(form) == true)
             ?.let { return WebDavResult.Failure(it) }
-        for (credentials in credentialsCandidatesForForm(form.normalized())) {
-            val result = nasFileClient.testDirectory(credentials, normalizeRemotePath(remotePath))
-            if (result is WebDavResult.Success) return result
-        }
-        return WebDavResult.Failure("没有权限访问这个文件夹，请检查 NAS 用户权限。")
+        return testResolvedDirectory(
+            normalized = form.normalized(),
+            remotePath = remotePath,
+            preferredBaseUrl = null,
+        ).result
     }
 
     private suspend fun testResolvedConnection(normalized: NasForm): ConnectionAttempt {
@@ -202,15 +232,51 @@ class MusicRepository(
                 successfulBaseUrl = credentials.baseUrl
                 break
             }
-            lastFailure = result as? WebDavResult.Failure
+            lastFailure = chooseBetterFailure(lastFailure, result as? WebDavResult.Failure)
         }
         if (result !is WebDavResult.Success && normalized.mode == NasConnectionMode.FN_CONNECT && resolved.wasFnIdOnly) {
-            result = WebDavResult.Failure("已识别 FN ID，但暂时无法读取文件夹。请确认飞牛 NAS 已开启文件访问服务，或复制完整远程访问地址后重试。")
+            result = lastFailure?.withFnConnectContext()
+                ?: WebDavResult.Failure(fnConnectFileAccessHelp("已识别 FN ID，但暂时无法读取文件目录。"))
         } else if (result !is WebDavResult.Success) {
             lastFailure?.let { result = it }
         }
         if (result is WebDavResult.Success) {
             database.nasDao().getActiveNas()?.let { database.nasDao().markConnected(it.id, System.currentTimeMillis()) }
+        }
+        return ConnectionAttempt(result = result, successfulBaseUrl = successfulBaseUrl)
+    }
+
+    private suspend fun testResolvedDirectory(
+        normalized: NasForm,
+        remotePath: String,
+        preferredBaseUrl: String?,
+    ): ConnectionAttempt {
+        val resolved = connectionResolver.resolve(normalized.toConnectionDraft())
+        val normalizedPath = normalizeRemotePath(remotePath)
+        var result: WebDavResult = WebDavResult.Failure("音乐目录不存在，请重新选择目录或确认路径是否正确。")
+        var lastFailure: WebDavResult.Failure? = null
+        var successfulBaseUrl: String? = null
+        val candidates = credentialsCandidatesForForm(normalized)
+            .let { credentials ->
+                if (preferredBaseUrl == null) {
+                    credentials
+                } else {
+                    credentials.sortedBy { it.baseUrl != preferredBaseUrl }
+                }
+            }
+        for (credentials in candidates) {
+            result = nasFileClient.testDirectory(credentials, normalizedPath)
+            if (result is WebDavResult.Success) {
+                successfulBaseUrl = credentials.baseUrl
+                break
+            }
+            lastFailure = chooseBetterFailure(lastFailure, result as? WebDavResult.Failure)
+        }
+        if (result !is WebDavResult.Success && normalized.mode == NasConnectionMode.FN_CONNECT && resolved.wasFnIdOnly) {
+            result = lastFailure?.withFnConnectContext()
+                ?: WebDavResult.Failure(fnConnectFileAccessHelp("已识别 FN ID，但无法访问音乐目录。"))
+        } else if (result !is WebDavResult.Success) {
+            lastFailure?.let { result = it }
         }
         return ConnectionAttempt(result = result, successfulBaseUrl = successfulBaseUrl)
     }
@@ -230,6 +296,31 @@ class MusicRepository(
         val credentials = currentCredentials() ?: return emptyList()
         return nasFileClient.listDirectory(credentials, remotePath ?: credentials.musicRootPath)
     }
+
+    suspend fun loadLyrics(track: TrackEntity, forceRefresh: Boolean = false): LyricsLoadResult =
+        withContext(Dispatchers.IO) {
+            val credentials = currentCredentials()
+                ?: return@withContext LyricsLoadResult.Failure("先连接你的 NAS")
+            val cacheKey = "${credentials.serverId}:${track.remotePath}:${track.modifiedAt.orEmpty()}"
+            if (!forceRefresh) {
+                synchronized(lyricsCache) {
+                    lyricsCache[cacheKey]?.let { return@withContext it }
+                }
+            }
+
+            val result = runCatching {
+                findLyrics(credentials, track)
+            }.getOrElse { error ->
+                LyricsLoadResult.Failure(lyricErrorMessage(error))
+            }
+
+            if (result !is LyricsLoadResult.Failure) {
+                synchronized(lyricsCache) {
+                    lyricsCache[cacheKey] = result
+                }
+            }
+            result
+        }
 
     suspend fun scanLibrary(onProgress: (ScanProgress) -> Unit): WebDavResult {
         val server = database.nasDao().getActiveNas() ?: return WebDavResult.Failure("先连接你的 NAS")
@@ -432,17 +523,159 @@ class MusicRepository(
 
     private fun browsingErrorMessage(error: Exception): String = when (error) {
         is WebDavHttpException -> when (error.code) {
-            401, 403 -> "没有权限访问这个文件夹，请检查飞牛 NAS 用户权限。"
-            404 -> "路径解析失败，请重新进入目录选择器选择文件夹。"
-            else -> "已连接到 NAS，但暂时无法读取文件夹。请确认飞牛 NAS 已开启文件访问服务，或尝试使用完整远程访问地址。"
+            401 -> "登录失败，请检查 NAS 用户名或密码。"
+            403 -> "当前账号没有该目录权限，请到飞牛 OS 为该账号授权共享目录。"
+            404 -> "音乐目录不存在，请重新选择目录或确认路径是否正确。"
+            405, 501 -> "文件服务未开启或不支持目录读取。请到飞牛 OS 的系统设置 > 文件共享协议 > WebDAV 开启服务。"
+            else -> "已连接到 NAS，但暂时无法读取文件夹，文件服务返回 HTTP ${error.code}。"
         }
         is UnknownHostException -> "无法找到这个 FN Connect 地址，请检查 FN ID 或远程访问地址。"
-        is SocketTimeoutException -> "连接超时，可能是 NAS 休眠、网络较慢或远程访问不稳定。"
+        is SocketTimeoutException -> "网络不可达或连接超时，可能是 NAS 休眠、网络较慢或远程访问不稳定。"
         is SSLHandshakeException -> "安全证书校验失败，请检查访问地址是否正确。"
         is SSLException -> "安全连接失败，请检查访问地址或证书配置。"
-        is ConnectException -> "NAS 拒绝连接，请检查远程访问服务是否开启。"
-        else -> "已连接到 NAS，但暂时无法读取文件夹。请确认飞牛 NAS 已开启文件访问服务，或尝试使用完整远程访问地址。"
+        is ConnectException -> "网络不可达，NAS 拒绝连接。请检查远程访问服务是否开启。"
+        else -> "已连接到 NAS，但暂时无法读取文件夹。请确认飞牛 NAS 已开启文件访问服务，并给当前账号授权共享目录。"
     }
+
+    private suspend fun findLyrics(credentials: NasCredentials, track: TrackEntity): LyricsLoadResult {
+        val directory = parentRemotePath(track.remotePath)
+        val baseName = track.fileName.substringBeforeLast('.', missingDelimiterValue = track.fileName)
+        val exactFileName = "$baseName.lrc"
+        readLyricsFileOrNull(
+            credentials = credentials,
+            remotePath = joinRemotePath(directory, exactFileName),
+            sourceFileName = exactFileName,
+        )?.let { return it }
+
+        val lyricFiles = nasFileClient.listLyricFiles(credentials, directory)
+        val matched = lyricFiles.firstOrNull { it.displayName.equals(exactFileName, ignoreCase = true) }
+            ?: lyricFiles.firstOrNull { simplifyLyricName(it.displayName) == simplifyLyricName(baseName) }
+            ?: return LyricsLoadResult.NotFound
+        return readLyricsFileOrNull(credentials, matched.remotePath, matched.displayName)
+            ?: LyricsLoadResult.NotFound
+    }
+
+    private suspend fun readLyricsFileOrNull(
+        credentials: NasCredentials,
+        remotePath: String,
+        sourceFileName: String,
+    ): LyricsLoadResult? {
+        val text = try {
+            nasFileClient.readTextFile(credentials, remotePath)
+        } catch (error: WebDavHttpException) {
+            if (error.code == 404) return null
+            return LyricsLoadResult.Failure(lyricErrorMessage(error))
+        }
+        val lyrics = parseLrc(text, sourceFileName)
+            ?: return LyricsLoadResult.Failure("歌词文件为空或格式异常，请检查 .lrc 内容。")
+        return LyricsLoadResult.Found(lyrics)
+    }
+
+    private fun parseLrc(raw: String, sourceFileName: String): LyricsContent? {
+        val timedLines = mutableListOf<LyricLine>()
+        val plainLines = mutableListOf<LyricLine>()
+        raw.replace("\r\n", "\n")
+            .replace('\r', '\n')
+            .lines()
+            .forEach { rawLine ->
+                val line = rawLine.trim()
+                if (line.isBlank()) return@forEach
+                val timeTags = LRC_TIME_REGEX.findAll(line).toList()
+                if (timeTags.isNotEmpty()) {
+                    val lyricText = line.replace(LRC_TIME_REGEX, "").trim()
+                    if (lyricText.isBlank()) return@forEach
+                    timeTags.forEach { match ->
+                        timedLines += LyricLine(
+                            timeMs = parseLrcTimeMs(match),
+                            text = lyricText,
+                        )
+                    }
+                } else if (!LRC_METADATA_REGEX.matches(line)) {
+                    plainLines += LyricLine(timeMs = null, text = line)
+                }
+            }
+
+        val lines = if (timedLines.isNotEmpty()) {
+            timedLines.sortedBy { it.timeMs ?: 0L }
+        } else {
+            plainLines
+        }
+        return lines.takeIf { it.isNotEmpty() }
+            ?.let { LyricsContent(sourceFileName = sourceFileName, lines = it) }
+    }
+
+    private fun parseLrcTimeMs(match: MatchResult): Long {
+        val minutes = match.groupValues[1].toLongOrNull() ?: 0L
+        val seconds = match.groupValues[2].toLongOrNull() ?: 0L
+        val fraction = match.groupValues.getOrNull(3).orEmpty()
+        val millis = when (fraction.length) {
+            0 -> 0L
+            1 -> fraction.toLongOrNull()?.times(100L) ?: 0L
+            2 -> fraction.toLongOrNull()?.times(10L) ?: 0L
+            else -> fraction.take(3).toLongOrNull() ?: 0L
+        }
+        return minutes * 60_000L + seconds * 1_000L + millis
+    }
+
+    private fun lyricErrorMessage(error: Throwable): String = when (error) {
+        is WebDavHttpException -> when (error.code) {
+            401 -> "登录失败，无法读取歌词文件。请检查 NAS 用户名或密码。"
+            403 -> "当前账号没有该目录权限，无法读取歌词文件。"
+            404 -> "暂无歌词"
+            405, 501 -> "文件服务未开启，无法读取歌词。请到飞牛 OS 的系统设置 > 文件共享协议 > WebDAV 开启服务。"
+            else -> "歌词加载失败，文件服务返回 HTTP ${error.code}。"
+        }
+        is UnknownHostException, is SocketTimeoutException, is ConnectException -> "歌词加载失败，网络不可达，请稍后重试。"
+        is SSLHandshakeException, is SSLException -> "歌词加载失败，安全连接异常，请检查访问地址或证书。"
+        else -> "歌词加载失败，请稍后重试。"
+    }
+
+    private fun WebDavResult.Failure.withFnConnectContext(): WebDavResult.Failure = when (code) {
+        401 -> this
+        403 -> copy(message = "权限不足，FN Connect 已尝试连接，但当前账号没有文件访问或共享目录权限。请到飞牛 OS 为该账号授权共享目录。")
+        404, 405, 501 -> copy(message = fnConnectFileAccessHelp("FN Connect 已尝试连接，但文件服务未开启或当前地址不是文件访问地址。"))
+        else -> if (code == null) {
+            copy(message = fnConnectFileAccessHelp(message))
+        } else {
+            copy(message = "$message\nFN Connect 只负责远程连接，音乐文件读取仍需要飞牛 OS 文件访问服务。")
+        }
+    }
+
+    private fun chooseBetterFailure(
+        current: WebDavResult.Failure?,
+        candidate: WebDavResult.Failure?,
+    ): WebDavResult.Failure? = when {
+        candidate == null -> current
+        current == null -> candidate
+        candidate.failurePriority() >= current.failurePriority() -> candidate
+        else -> current
+    }
+
+    private fun WebDavResult.Failure.failurePriority(): Int = when (code) {
+        401 -> 100
+        403 -> 90
+        404, 405, 501 -> 80
+        in 500..599 -> 70
+        null -> 10
+        else -> 50
+    }
+
+    private fun fnConnectFileAccessHelp(prefix: String): String =
+        "$prefix\nFN Connect 只负责远程连接，音乐文件读取仍需要文件访问服务。请到飞牛 OS 的系统设置 > 文件共享协议 > WebDAV 开启服务，并给当前账号授权音乐共享目录。"
+
+    private fun parentRemotePath(remotePath: String): String {
+        val normalized = normalizeRemotePath(remotePath)
+        val parent = normalized.substringBeforeLast('/', missingDelimiterValue = "")
+        return parent.ifBlank { "/" }
+    }
+
+    private fun joinRemotePath(parent: String, child: String): String =
+        normalizeRemotePath("${parent.trimEnd('/')}/$child")
+
+    private fun simplifyLyricName(fileName: String): String =
+        fileName.substringBeforeLast('.', missingDelimiterValue = fileName)
+            .lowercase(Locale.ROOT)
+            .filter { it.isLetterOrDigit() }
 
     private fun NasServerEntity.canUseStoredPasswordFor(form: NasForm): Boolean {
         val input = form.inputAddress.trim().trimEnd('/')
@@ -482,6 +715,9 @@ class MusicRepository(
 
     private companion object {
         const val ROOT_DISPLAY_PATH = "NAS 根目录"
+        const val MAX_LYRICS_CACHE_SIZE = 48
+        val LRC_TIME_REGEX = Regex("""\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?]""")
+        val LRC_METADATA_REGEX = Regex("""^\[[a-zA-Z]+:.*]$""")
         val COMMON_DIRECTORY_NAMES = setOf(
             "我的文件",
             "home",

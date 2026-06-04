@@ -23,6 +23,8 @@ import tech.peakedge.naswalkman.data.db.TrackEntity
 import tech.peakedge.naswalkman.data.repository.AppSettings
 import tech.peakedge.naswalkman.data.repository.DirectoryCrumb
 import tech.peakedge.naswalkman.data.repository.DirectoryBrowserResult
+import tech.peakedge.naswalkman.data.repository.LyricsContent
+import tech.peakedge.naswalkman.data.repository.LyricsLoadResult
 import tech.peakedge.naswalkman.data.repository.NasForm
 import tech.peakedge.naswalkman.data.repository.MusicRepository
 import tech.peakedge.naswalkman.data.repository.ScanProgress
@@ -36,6 +38,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -61,6 +65,14 @@ data class DirectoryPickerState(
     val isLoading: Boolean = false,
 )
 
+sealed class LyricsUiState(open val trackId: String?) {
+    data object Idle : LyricsUiState(null)
+    data class Loading(override val trackId: String) : LyricsUiState(trackId)
+    data class Ready(override val trackId: String, val lyrics: LyricsContent) : LyricsUiState(trackId)
+    data class Empty(override val trackId: String, val message: String) : LyricsUiState(trackId)
+    data class Error(override val trackId: String, val message: String) : LyricsUiState(trackId)
+}
+
 data class AppUiState(
     val nasServer: NasServerEntity? = null,
     val connectionForm: NasForm = NasForm(),
@@ -84,6 +96,8 @@ data class AppUiState(
     val repeatMode: Int = Player.REPEAT_MODE_OFF,
     val playbackPositionMs: Long = 0L,
     val playbackDurationMs: Long = 0L,
+    val showLyrics: Boolean = false,
+    val lyricsState: LyricsUiState = LyricsUiState.Idle,
     val cacheBytes: Long = 0L,
     val settings: AppSettings = AppSettings(),
 ) {
@@ -112,6 +126,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
     private var playbackTicker: Job? = null
+    private var lyricLoadJob: Job? = null
     private val playbackCommandMutex = Mutex()
     private var lastPlaybackCommandAtMs = 0L
 
@@ -143,6 +158,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         bindRepositoryFlows()
+        observeLyricRequests()
         connectPlaybackController(application)
     }
 
@@ -247,6 +263,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     favorites = emptyList(),
                     recent = emptyList(),
                     selectedTab = MainTab.Library,
+                    lyricsState = LyricsUiState.Idle,
+                    showLyrics = false,
                     message = "已删除 NAS 绑定",
                 )
             }
@@ -476,6 +494,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun toggleLyricsMode() {
+        _uiState.update { it.copy(showLyrics = !it.showLyrics) }
+    }
+
+    fun retryLyrics() {
+        loadLyricsForTrack(_uiState.value.currentTrackId, forceRefresh = true)
+    }
+
     fun toggleFavorite(track: TrackEntity) {
         viewModelScope.launch {
             repository.toggleFavorite(track.id)
@@ -569,6 +595,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun observeLyricRequests() {
+        viewModelScope.launch {
+            uiState
+                .map { it.currentTrackId }
+                .distinctUntilChanged()
+                .collect { trackId -> loadLyricsForTrack(trackId, forceRefresh = false) }
+        }
+    }
+
     private fun connectPlaybackController(application: Application) {
         val token = SessionToken(
             application,
@@ -630,15 +665,70 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun refreshPlaybackState() {
         val player = controller ?: return
         val duration = player.duration.takeIf { it > 0 } ?: 0L
+        val currentMediaId = player.currentMediaItem?.mediaId
         _uiState.update {
             it.copy(
                 isPlaying = player.isPlaying,
                 isShuffleEnabled = player.shuffleModeEnabled,
                 repeatMode = player.repeatMode,
-                currentTrackId = player.currentMediaItem?.mediaId ?: it.currentTrackId,
+                currentTrackId = currentMediaId ?: it.currentTrackId,
                 playbackPositionMs = player.currentPosition.coerceAtLeast(0L),
                 playbackDurationMs = duration,
             )
+        }
+    }
+
+    private fun loadLyricsForTrack(trackId: String?, forceRefresh: Boolean) {
+        lyricLoadJob?.cancel()
+        if (trackId == null) {
+            _uiState.update { it.copy(lyricsState = LyricsUiState.Idle) }
+            return
+        }
+        val existingState = _uiState.value.lyricsState
+        if (!forceRefresh &&
+            existingState.trackId == trackId &&
+            existingState !is LyricsUiState.Loading &&
+            existingState !is LyricsUiState.Error
+        ) {
+            return
+        }
+        val track = _uiState.value.currentTrack
+        if (track == null) {
+            _uiState.update {
+                it.copy(
+                    lyricsState = LyricsUiState.Empty(
+                        trackId = trackId,
+                        message = "暂无歌词\n请将同名 .lrc 歌词文件放在音乐文件同目录下",
+                    ),
+                )
+            }
+            return
+        }
+        lyricLoadJob = viewModelScope.launch {
+            _uiState.update {
+                if (it.currentTrackId == trackId) {
+                    it.copy(lyricsState = LyricsUiState.Loading(trackId))
+                } else {
+                    it
+                }
+            }
+            val result = repository.loadLyrics(track, forceRefresh = forceRefresh)
+            _uiState.update {
+                if (it.currentTrackId != trackId) {
+                    it
+                } else {
+                    it.copy(
+                        lyricsState = when (result) {
+                            is LyricsLoadResult.Found -> LyricsUiState.Ready(trackId, result.lyrics)
+                            LyricsLoadResult.NotFound -> LyricsUiState.Empty(
+                                trackId = trackId,
+                                message = "暂无歌词\n请将同名 .lrc 歌词文件放在音乐文件同目录下",
+                            )
+                            is LyricsLoadResult.Failure -> LyricsUiState.Error(trackId, result.message)
+                        },
+                    )
+                }
+            }
         }
     }
 
@@ -662,6 +752,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         playbackTicker?.cancel()
+        lyricLoadJob?.cancel()
         controller?.removeListener(playerListener)
         controller?.release()
         controllerFuture?.cancel(true)

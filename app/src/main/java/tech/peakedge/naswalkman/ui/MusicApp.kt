@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -19,6 +20,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -91,9 +94,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.media3.common.Player
+import kotlinx.coroutines.delay
 import tech.peakedge.naswalkman.data.db.NasConnectionMode
 import tech.peakedge.naswalkman.data.db.PlaylistSummary
 import tech.peakedge.naswalkman.data.db.TrackEntity
@@ -340,7 +346,7 @@ private fun NasBindingScreen(
                     !form.inputAddress.startsWith("http", ignoreCase = true)
                 ) {
                     Text(
-                        "如果自动连接失败，请改填完整远程访问地址。",
+                        "FN Connect 负责远程连接，音乐目录读取仍需要飞牛 OS 开启文件共享/WebDAV 服务。",
                         modifier = Modifier.padding(horizontal = 4.dp),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -738,12 +744,12 @@ private fun FnIdHelpDialog(onDismiss: () -> Unit) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("1. 打开飞牛 fnOS 或飞牛 App。")
                 Text("2. 确认已经开启 FN Connect 远程访问。")
-                Text("3. 找到 FN ID 或远程访问地址。")
-                Text("4. 回到本 App，输入 FN ID 或完整远程访问地址。")
-                Text("5. 再填写 NAS 的用户名和密码。")
-                Text("6. 音乐目录填写 NAS 里保存歌曲的文件夹路径，例如 /Music。")
+                Text("3. 在系统设置 > 文件共享协议 > WebDAV 开启文件访问服务。")
+                Text("4. 在共享目录或用户权限里，给当前账号授权音乐目录。")
+                Text("5. 回到本 App，输入 FN ID、远程访问地址或 WebDAV 地址。")
+                Text("6. 再填写 NAS 的用户名和密码，并选择音乐目录。")
                 Text(
-                    "不同系统版本的入口可能不同，本 App 不依赖飞牛内部私有接口。",
+                    "FN Connect 只负责远程连接，音乐文件读取仍依赖飞牛 OS 文件访问服务。不同系统版本的入口可能略有差异。",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -754,7 +760,7 @@ private fun FnIdHelpDialog(onDismiss: () -> Unit) {
 }
 
 private fun connectionModeDescription(mode: NasConnectionMode): String = when (mode) {
-    NasConnectionMode.FN_CONNECT -> "推荐。输入 FN ID 或从飞牛系统复制的 FN Connect 远程访问地址。"
+    NasConnectionMode.FN_CONNECT -> "推荐。输入 FN ID 或 FN Connect 地址；文件读取仍需要飞牛 OS 开启 WebDAV/文件共享并授权目录。"
     NasConnectionMode.REMOTE_URL -> "适合已经配置公网 IP、DDNS、反向代理或 HTTPS 域名的用户。"
     NasConnectionMode.WEBDAV_ADVANCED -> "适合已经知道文件访问服务如何配置的高级用户。"
 }
@@ -766,7 +772,7 @@ private fun addressLabel(mode: NasConnectionMode): String = when (mode) {
 }
 
 private fun addressPlaceholder(mode: NasConnectionMode): String = when (mode) {
-    NasConnectionMode.FN_CONNECT -> "myfnid 或 https://myfnid.5ddd.com"
+    NasConnectionMode.FN_CONNECT -> "myfnid 或 https://dav.myfnid.fnos.net"
     NasConnectionMode.REMOTE_URL -> "https://nas.example.com"
     NasConnectionMode.WEBDAV_ADVANCED -> "https://nas.example.com/dav"
 }
@@ -1118,13 +1124,23 @@ private fun PlayerScreen(state: AppUiState, viewModel: AppViewModel) {
         }
         item {
             Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                AlbumCover(
-                    modifier = Modifier
-                        .fillMaxWidth(0.84f)
-                        .aspectRatio(1f),
-                    cornerRadius = 24.dp,
-                    iconSize = 92.dp,
-                )
+                if (state.showLyrics) {
+                    LyricsPanel(
+                        state = state,
+                        onToggleCover = viewModel::toggleLyricsMode,
+                        onSeek = viewModel::seekTo,
+                        onRetry = viewModel::retryLyrics,
+                    )
+                } else {
+                    AlbumCover(
+                        modifier = Modifier
+                            .fillMaxWidth(0.84f)
+                            .aspectRatio(1f)
+                            .clickable(enabled = track != null) { viewModel.toggleLyricsMode() },
+                        cornerRadius = 24.dp,
+                        iconSize = 92.dp,
+                    )
+                }
             }
         }
         item {
@@ -1163,6 +1179,11 @@ private fun PlayerScreen(state: AppUiState, viewModel: AppViewModel) {
         }
         item {
             PlaybackProgress(state, onSeek = viewModel::seekTo)
+            LyricsToggleRow(
+                showLyrics = state.showLyrics,
+                enabled = track != null,
+                onToggle = viewModel::toggleLyricsMode,
+            )
         }
         item {
             Row(
@@ -1248,6 +1269,183 @@ private fun PlayerScreen(state: AppUiState, viewModel: AppViewModel) {
             }
         }
         item { Spacer(Modifier.height(24.dp)) }
+    }
+}
+
+@Composable
+private fun LyricsToggleRow(
+    showLyrics: Boolean,
+    enabled: Boolean,
+    onToggle: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp),
+        horizontalArrangement = Arrangement.End,
+    ) {
+        AssistChip(
+            onClick = onToggle,
+            enabled = enabled,
+            label = { Text(if (showLyrics) "显示封面" else "显示歌词") },
+            leadingIcon = {
+                Icon(
+                    if (showLyrics) Icons.Rounded.LibraryMusic else Icons.Rounded.MusicNote,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+            },
+        )
+    }
+}
+
+@Composable
+private fun LyricsPanel(
+    state: AppUiState,
+    onToggleCover: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onRetry: () -> Unit,
+) {
+    val lyricsState = state.lyricsState
+    Box(
+        modifier = Modifier
+            .fillMaxWidth(0.84f)
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(24.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f))
+            .clickable(onClick = onToggleCover)
+            .padding(horizontal = 12.dp, vertical = 14.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        when {
+            state.currentTrackId == null -> LyricsMessage("暂无歌词", "先从音乐库或文件夹选择一首歌")
+            lyricsState is LyricsUiState.Ready && lyricsState.trackId == state.currentTrackId -> {
+                LyricsList(
+                    lyrics = lyricsState.lyrics,
+                    positionMs = state.playbackPositionMs,
+                    onSeek = onSeek,
+                )
+            }
+            lyricsState is LyricsUiState.Error && lyricsState.trackId == state.currentTrackId -> {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    LyricsMessage("歌词加载失败", lyricsState.message)
+                    OutlinedButton(onClick = onRetry) {
+                        Text("重试")
+                    }
+                }
+            }
+            lyricsState is LyricsUiState.Empty && lyricsState.trackId == state.currentTrackId -> {
+                LyricsMessage("暂无歌词", lyricsState.message)
+            }
+            else -> {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
+                    Text(
+                        "正在加载歌词",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LyricsList(
+    lyrics: tech.peakedge.naswalkman.data.repository.LyricsContent,
+    positionMs: Long,
+    onSeek: (Long) -> Unit,
+) {
+    val listState = rememberLazyListState()
+    val currentIndex = remember(lyrics, positionMs) {
+        lyrics.lines.indexOfLast { line -> line.timeMs?.let { it <= positionMs } == true }
+    }
+    var autoScrollPaused by remember(lyrics.sourceFileName) { mutableStateOf(false) }
+
+    LaunchedEffect(listState.isScrollInProgress, lyrics.sourceFileName) {
+        if (listState.isScrollInProgress) {
+            autoScrollPaused = true
+            delay(3500)
+            autoScrollPaused = false
+        }
+    }
+    LaunchedEffect(currentIndex, autoScrollPaused, lyrics.sourceFileName) {
+        if (!autoScrollPaused && currentIndex >= 0) {
+            listState.animateScrollToItem((currentIndex - 3).coerceAtLeast(0))
+        }
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        state = listState,
+        contentPadding = PaddingValues(vertical = 92.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        itemsIndexed(lyrics.lines) { index, line ->
+            val isCurrent = index == currentIndex
+            Text(
+                line.text,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .then(
+                        if (line.timeMs != null) {
+                            Modifier.clickable { onSeek(line.timeMs) }
+                        } else {
+                            Modifier
+                        },
+                    )
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                textAlign = TextAlign.Center,
+                style = if (isCurrent) {
+                    MaterialTheme.typography.titleMedium.copy(lineHeight = 30.sp)
+                } else {
+                    MaterialTheme.typography.bodyLarge.copy(lineHeight = 27.sp)
+                },
+                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                color = when {
+                    isCurrent -> MaterialTheme.colorScheme.primary
+                    lyrics.hasTimeline -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f)
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun LyricsMessage(title: String, body: String) {
+    Column(
+        modifier = Modifier.padding(horizontal = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            Icons.Rounded.MusicNote,
+            contentDescription = null,
+            modifier = Modifier.size(34.dp),
+            tint = MaterialTheme.colorScheme.primary,
+        )
+        Text(
+            title,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+        )
+        Text(
+            body,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            lineHeight = 23.sp,
+        )
     }
 }
 
@@ -1510,6 +1708,11 @@ private fun NasInlineEditor(
                 Spacer(Modifier.width(4.dp))
                 Text("哪里找 FN ID？")
             }
+            Text(
+                "FN Connect 负责远程连接，音乐目录读取仍需要飞牛 OS 开启文件共享/WebDAV 服务。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         if (form.inputAddress.startsWith("http://", ignoreCase = true)) {
             Text(

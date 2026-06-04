@@ -11,10 +11,12 @@ import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.io.StringReader
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import java.nio.charset.Charset
 import java.net.URLDecoder
 import java.util.Locale
 import javax.net.ssl.SSLException
@@ -31,6 +33,9 @@ data class RemoteItem(
 ) {
     val isSupportedAudio: Boolean
         get() = !isDirectory && AudioFormats.isSupported(displayName)
+
+    val isLrcFile: Boolean
+        get() = !isDirectory && displayName.endsWith(".lrc", ignoreCase = true)
 }
 
 sealed class WebDavResult {
@@ -51,24 +56,25 @@ class WebDavClient(private val baseClient: OkHttpClient) {
             )
         } catch (error: WebDavHttpException) {
             when (error.code) {
-                401, 403 -> WebDavResult.Failure("登录失败，请检查 NAS 用户名或密码。", error.code)
-                404 -> WebDavResult.Failure("没有找到这个音乐目录，请检查路径是否正确。", error.code)
-                else -> WebDavResult.Failure("连接 NAS 失败，请检查 FN Connect 是否开启、地址是否正确、账号密码是否正确。", error.code)
+                401 -> WebDavResult.Failure("登录失败，请检查 NAS 用户名或密码。", error.code)
+                403 -> WebDavResult.Failure("权限不足，当前账号无法访问文件服务。请到飞牛 OS 为该账号开启文件访问或共享目录权限。", error.code)
+                404, 405, 501 -> WebDavResult.Failure("文件服务未开启或当前地址不是文件访问地址。请到飞牛 OS 的系统设置 > 文件共享协议 > WebDAV 开启服务，并确认共享目录权限。", error.code)
+                else -> WebDavResult.Failure("连接 NAS 失败，文件服务返回 HTTP ${error.code}。请检查 FN Connect、文件访问服务和地址配置。", error.code)
             }
         } catch (_: UnknownHostException) {
             WebDavResult.Failure("无法找到这个 FN Connect 地址，请检查 FN ID 或远程访问地址。")
         } catch (_: SocketTimeoutException) {
-            WebDavResult.Failure("连接超时，可能是网络较慢、NAS 休眠或 FN Connect 当前不稳定。")
+            WebDavResult.Failure("网络不可达或连接超时，可能是网络较慢、NAS 休眠或 FN Connect 当前不稳定。")
         } catch (_: SSLHandshakeException) {
             WebDavResult.Failure("安全证书校验失败，请检查访问地址是否正确。")
         } catch (_: SSLException) {
             WebDavResult.Failure("安全连接失败，请检查访问地址或证书配置。")
         } catch (_: ConnectException) {
-            WebDavResult.Failure("NAS 拒绝连接，请检查远程访问服务是否开启。")
+            WebDavResult.Failure("网络不可达，NAS 拒绝连接。请检查 FN Connect 或文件访问服务是否开启。")
         } catch (_: IllegalArgumentException) {
             WebDavResult.Failure("请填写有效的 FN Connect 地址或远程访问地址。")
         } catch (_: Exception) {
-            WebDavResult.Failure("无法连接 NAS，请检查 FN Connect 是否开启或当前网络是否可用。")
+            WebDavResult.Failure("网络不可达，无法连接 NAS。请检查 FN Connect 是否开启或当前网络是否可用。")
         }
     }
 
@@ -78,28 +84,40 @@ class WebDavClient(private val baseClient: OkHttpClient) {
             WebDavResult.Success()
         } catch (error: WebDavHttpException) {
             when (error.code) {
-                401, 403 -> WebDavResult.Failure("没有权限访问这个文件夹，请检查 NAS 用户权限。", error.code)
-                404 -> WebDavResult.Failure("路径解析失败，请重新进入目录选择器选择文件夹。", error.code)
-                else -> WebDavResult.Failure("已连接到 NAS，但暂时无法读取文件夹。请确认飞牛 NAS 已开启文件访问服务，或尝试使用完整远程访问地址。", error.code)
+                401 -> WebDavResult.Failure("登录失败，请检查 NAS 用户名或密码。", error.code)
+                403 -> WebDavResult.Failure("当前账号没有该目录权限，请到飞牛 OS 为该账号授权共享目录。", error.code)
+                404 -> WebDavResult.Failure("音乐目录不存在，请重新选择目录或确认路径是否正确。", error.code)
+                405, 501 -> WebDavResult.Failure("文件服务未开启或不支持目录读取。请到飞牛 OS 的系统设置 > 文件共享协议 > WebDAV 开启服务。", error.code)
+                else -> WebDavResult.Failure("已连接到 NAS，但暂时无法读取文件夹，文件服务返回 HTTP ${error.code}。", error.code)
             }
         } catch (_: UnknownHostException) {
             WebDavResult.Failure("无法找到这个 FN Connect 地址，请检查 FN ID 或远程访问地址。")
         } catch (_: SocketTimeoutException) {
-            WebDavResult.Failure("连接超时，可能是 NAS 休眠、网络较慢或远程访问不稳定。")
+            WebDavResult.Failure("网络不可达或连接超时，可能是 NAS 休眠、网络较慢或远程访问不稳定。")
         } catch (_: SSLHandshakeException) {
             WebDavResult.Failure("安全证书校验失败，请检查访问地址是否正确。")
         } catch (_: SSLException) {
             WebDavResult.Failure("安全连接失败，请检查访问地址或证书配置。")
         } catch (_: ConnectException) {
-            WebDavResult.Failure("NAS 拒绝连接，请检查远程访问服务是否开启。")
+            WebDavResult.Failure("网络不可达，NAS 拒绝连接。请检查远程访问服务是否开启。")
         } catch (_: IllegalArgumentException) {
             WebDavResult.Failure("路径解析失败，请重新进入目录选择器选择文件夹。")
         } catch (_: Exception) {
-            WebDavResult.Failure("已连接到 NAS，但暂时无法读取文件夹。请确认飞牛 NAS 已开启文件访问服务，或尝试使用完整远程访问地址。")
+            WebDavResult.Failure("已连接到 NAS，但暂时无法读取文件夹。请确认飞牛 NAS 已开启文件访问服务，并给当前账号授权共享目录。")
         }
     }
 
     suspend fun listDirectory(credentials: NasCredentials, remotePath: String): List<RemoteItem> =
+        listDirectoryInternal(credentials, remotePath)
+            .filter { it.isDirectory || it.isSupportedAudio }
+            .sortedWith(compareBy<RemoteItem> { !it.isDirectory }.thenBy { it.displayName.lowercase(Locale.ROOT) })
+
+    suspend fun listLyricFiles(credentials: NasCredentials, remotePath: String): List<RemoteItem> =
+        listDirectoryInternal(credentials, remotePath)
+            .filter { it.isLrcFile }
+            .sortedBy { it.displayName.lowercase(Locale.ROOT) }
+
+    private suspend fun listDirectoryInternal(credentials: NasCredentials, remotePath: String): List<RemoteItem> =
         withContext(Dispatchers.IO) {
             val body = PROPFIND_BODY.toRequestBody(XML_MEDIA_TYPE)
             val request = authedRequest(credentials, remotePath)
@@ -133,6 +151,21 @@ class WebDavClient(private val baseClient: OkHttpClient) {
                     body.byteStream().use { input -> input.copyTo(output) }
                 }
                 target.length()
+            }
+        }
+
+    suspend fun readTextFile(credentials: NasCredentials, remotePath: String, maxBytes: Long): String =
+        withContext(Dispatchers.IO) {
+            val request = authedRequest(credentials, remotePath).get().build()
+            val response = clientFor(credentials).newCall(request).execute()
+            response.use {
+                if (!it.isSuccessful) throw WebDavHttpException(it.code)
+                val body = it.body ?: return@withContext ""
+                val contentLength = body.contentLength()
+                if (contentLength > maxBytes) {
+                    throw IOException("text file is too large: $contentLength")
+                }
+                decodeText(body.bytes())
             }
         }
 
@@ -211,8 +244,6 @@ class WebDavClient(private val baseClient: OkHttpClient) {
                 modifiedAt = response.modifiedAt,
             )
         }
-            .filter { it.isDirectory || it.isSupportedAudio }
-            .sortedWith(compareBy<RemoteItem> { !it.isDirectory }.thenBy { it.displayName.lowercase(Locale.ROOT) })
     }
 
     private fun remotePathFromHref(baseUrl: String, href: String): String {
@@ -235,6 +266,13 @@ class WebDavClient(private val baseClient: OkHttpClient) {
 
     private fun XmlPullParser.localNameCompat(): String =
         (name ?: "").substringAfter(':').lowercase(Locale.ROOT)
+
+    private fun decodeText(bytes: ByteArray): String {
+        val utf8 = bytes.toString(Charsets.UTF_8).trimStart('\uFEFF')
+        if ('\uFFFD' !in utf8) return utf8
+        return runCatching { String(bytes, Charset.forName("GB18030")).trimStart('\uFEFF') }
+            .getOrDefault(utf8)
+    }
 
     private data class ResponseBuilder(
         var href: String? = null,

@@ -10,9 +10,11 @@ This project is an independent third-party open-source tool. It is not an offici
 
 * 连接个人 NAS 音乐目录
 * 支持 FN Connect / 远程访问地址 / WebDAV 等连接方式
+* FN Connect 场景会明确提示文件访问服务和共享目录权限状态
 * 支持浏览 NAS 文件夹并选择音乐目录
 * 支持扫描个人音乐库
 * 支持 mp3、flac、m4a、aac、wav、ogg、opus 等常见音频格式
+* 支持同目录 `.lrc` 歌词显示、自动滚动和点击跳转
 * 支持在线播放
 * 支持后台播放
 * 支持通知栏播放控制
@@ -32,14 +34,15 @@ This project is an independent third-party open-source tool. It is not an offici
 ## 使用说明
 
 1. 在 NAS 中开启文件访问服务，例如 WebDAV。
-2. 如果使用远程访问，请确认远程访问能力已经开启。
+2. 如果使用 FN Connect，请确认远程访问能力已经开启，并给当前账号授权音乐共享目录。
 3. 打开 NAS随身听。
 4. 输入远程访问地址或 FN Connect 相关地址。
 5. 输入 NAS 用户名和密码。
 6. 测试连接。
 7. 登录成功后，在目录选择器中选择音乐目录。
 8. 扫描音乐库。
-9. 开始播放。
+9. 如需显示歌词，请将同名 `.lrc` 文件放在音乐文件同目录下。
+10. 开始播放。
 
 ## 隐私和安全
 

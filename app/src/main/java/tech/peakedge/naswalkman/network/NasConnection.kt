@@ -62,10 +62,16 @@ private object FnConnectResolver {
         }
 
         val fnId = input.trim().trim('/').removePrefix("@")
-        val candidates = listOf(
-            "https://$fnId",
-            "https://$fnId.5ddd.com",
-        ).distinct()
+        val candidates = if (fnId.contains(".") || fnId.contains(":")) {
+            listOf("https://$fnId")
+        } else {
+            listOf(
+                "https://dav.$fnId.fnos.net",
+                "https://dav.$fnId.fnos.net:443",
+                "https://$fnId.5ddd.com",
+                "https://$fnId",
+            )
+        }.distinct()
         return ResolvedNasEndpoint(
             inputAddress = input,
             primaryBaseUrl = candidates.first(),
@@ -93,8 +99,10 @@ interface NasFileClient {
     suspend fun listDirectory(credentials: NasCredentials, remotePath: String): List<RemoteItem>
     suspend fun listDirectories(credentials: NasCredentials, remotePath: String): List<NasDirectory>
     suspend fun listAudioFiles(credentials: NasCredentials, remotePath: String): List<NasAudioFile>
+    suspend fun listLyricFiles(credentials: NasCredentials, remotePath: String): List<RemoteItem>
     suspend fun testDirectory(credentials: NasCredentials, remotePath: String): WebDavResult
     fun getDisplayPath(remotePath: String): String
+    suspend fun readTextFile(credentials: NasCredentials, remotePath: String, maxBytes: Long = 512 * 1024): String
     suspend fun downloadToFile(credentials: NasCredentials, remotePath: String, target: File): Long
     fun urlFor(credentials: NasCredentials, remotePath: String): String
     suspend fun supportsRange(credentials: NasCredentials, remotePath: String): Boolean = true
@@ -135,11 +143,17 @@ class WebDavNasFileClient(private val webDavClient: WebDavClient) : NasFileClien
     override suspend fun testDirectory(credentials: NasCredentials, remotePath: String): WebDavResult =
         webDavClient.testDirectory(credentials, remotePath)
 
+    override suspend fun listLyricFiles(credentials: NasCredentials, remotePath: String): List<RemoteItem> =
+        webDavClient.listLyricFiles(credentials, remotePath)
+
     override fun getDisplayPath(remotePath: String): String =
         remotePath.trim('/').split('/')
             .filter { it.isNotBlank() }
             .joinToString(" / ")
             .ifBlank { "NAS 根目录" }
+
+    override suspend fun readTextFile(credentials: NasCredentials, remotePath: String, maxBytes: Long): String =
+        webDavClient.readTextFile(credentials, remotePath, maxBytes)
 
     override suspend fun downloadToFile(credentials: NasCredentials, remotePath: String, target: File): Long =
         webDavClient.downloadToFile(credentials, remotePath, target)
