@@ -2,6 +2,7 @@ package tech.peakedge.naswalkman.ui
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -2140,9 +2141,11 @@ private fun MusicFolderManagerScreen(state: AppUiState, viewModel: AppViewModel)
     var localIncludeSubfolders by remember { mutableStateOf(true) }
     var nasIncludeSubfolders by remember { mutableStateOf(true) }
     val localFolderLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree(),
-    ) { uri ->
-        uri?.let { viewModel.addLocalMusicFolder(it, localIncludeSubfolders) }
+        contract = ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        result.data?.data?.let { uri ->
+            viewModel.addLocalMusicFolder(uri, result.data?.flags ?: 0, localIncludeSubfolders)
+        }
     }
 
     LazyColumn(
@@ -2175,7 +2178,7 @@ private fun MusicFolderManagerScreen(state: AppUiState, viewModel: AppViewModel)
                 SettingRow(
                     title = "添加手机本地文件夹",
                     value = "使用系统文件夹选择器",
-                    onClick = { localFolderLauncher.launch(null) },
+                    onClick = { localFolderLauncher.launch(openDocumentTreeIntent()) },
                 )
                 HorizontalDivider()
                 IncludeSubfolderRow(
@@ -2303,6 +2306,14 @@ private fun sourceTypeLabel(type: MusicSourceType): String = when (type) {
     MusicSourceType.NAS -> "NAS"
     MusicSourceType.LOCAL -> "本地"
 }
+
+private fun openDocumentTreeIntent(): Intent =
+    Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+    }
 
 @Composable
 private fun SongInfoFetchProgressView(

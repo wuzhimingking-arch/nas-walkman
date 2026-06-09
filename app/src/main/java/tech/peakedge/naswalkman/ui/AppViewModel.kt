@@ -571,10 +571,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(showMusicFolderManager = false) }
     }
 
-    fun addLocalMusicFolder(uri: Uri, includeSubfolders: Boolean) {
+    fun addLocalMusicFolder(uri: Uri, grantFlags: Int, includeSubfolders: Boolean) {
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true) }
-            val result = repository.addLocalMusicFolder(uri, includeSubfolders)
+            val result = repository.addLocalMusicFolder(uri, grantFlags, includeSubfolders)
             _uiState.update {
                 it.copy(
                     isBusy = false,
