@@ -11,6 +11,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -48,7 +49,8 @@ class MusicPlaybackService : MediaSessionService() {
     @androidx.annotation.OptIn(UnstableApi::class)
     private fun buildPlayer(): ExoPlayer {
         val okHttpClient = (application as NasMusicApplication).container.okHttpClient
-        val dataSourceFactory = OkHttpDataSource.Factory(okHttpClient)
+        val httpDataSourceFactory = OkHttpDataSource.Factory(okHttpClient)
+        val dataSourceFactory = DefaultDataSource.Factory(this, httpDataSourceFactory)
         val renderersFactory = DefaultRenderersFactory(this)
             .setEnableDecoderFallback(true)
             .forceDisableMediaCodecAsynchronousQueueing()
@@ -85,7 +87,8 @@ class MusicPlaybackService : MediaSessionService() {
 
         override fun onPlayerError(error: PlaybackException) {
             logPlayerError(error)
-            if (isRecoverablePlaybackError(error) && retryCountForCurrentMedia == 0) {
+            val currentUri = player?.currentMediaItem?.localConfiguration?.uri
+            if (currentUri?.isRetryableNetworkUri() == true && isRecoverablePlaybackError(error) && retryCountForCurrentMedia == 0) {
                 retryCountForCurrentMedia += 1
                 rebuildPlayerAndRetryCurrentItem()
             } else {
@@ -235,6 +238,9 @@ class MusicPlaybackService : MediaSessionService() {
             -> true
             else -> false
         }
+
+    private fun android.net.Uri.isRetryableNetworkUri(): Boolean =
+        scheme.equals("http", ignoreCase = true) || scheme.equals("https", ignoreCase = true)
 
     companion object {
         const val ACTION_PLAYBACK_RECOVERY_FAILED =

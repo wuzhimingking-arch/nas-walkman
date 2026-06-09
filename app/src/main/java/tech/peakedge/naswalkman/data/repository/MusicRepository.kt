@@ -35,6 +35,8 @@ import tech.peakedge.naswalkman.network.WebDavResult
 import tech.peakedge.naswalkman.network.WebDavUnexpectedResponseException
 import tech.peakedge.naswalkman.security.CredentialCipher
 import java.io.File
+import java.io.FileNotFoundException
+import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
@@ -103,6 +105,8 @@ sealed class LyricsLoadResult {
     data object NotFound : LyricsLoadResult()
     data class Failure(val message: String) : LyricsLoadResult()
 }
+
+class PlaybackSourceException(message: String) : Exception(message)
 
 class MusicRepository(
     private val context: Context,
@@ -833,7 +837,7 @@ class MusicRepository(
 
     suspend fun mediaUriFor(track: TrackEntity): String? = withContext(Dispatchers.IO) {
         if (track.sourceType == MusicSourceType.LOCAL) {
-            return@withContext track.remotePath.takeIf { it.isNotBlank() }
+            return@withContext validatedLocalPlaybackUri(track.remotePath)
         }
         track.localCachePath
             ?.let(::File)
@@ -841,6 +845,49 @@ class MusicRepository(
             ?.let { return@withContext android.net.Uri.fromFile(it).toString() }
         val credentials = currentCredentials() ?: return@withContext null
         return@withContext nasFileClient.urlFor(credentials, track.remotePath)
+    }
+
+    private fun validatedLocalPlaybackUri(uriText: String): String? {
+        if (uriText.isBlank()) throw PlaybackSourceException("无法播放本地音乐，请检查文件权限或重新添加文件夹")
+        val uri = try {
+            Uri.parse(uriText)
+        } catch (_: Exception) {
+            throw PlaybackSourceException("无法播放本地音乐，请检查文件权限或重新添加文件夹")
+        }
+        return when (uri.scheme?.lowercase(Locale.ROOT)) {
+            "content" -> {
+                if (!hasPersistedReadPermissionFor(uri)) {
+                    throw PlaybackSourceException("无法播放本地音乐，请检查文件权限或重新添加文件夹")
+                }
+                try {
+                    context.contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
+                        if (descriptor.statSize == 0L) {
+                            Log.w(TAG, "local playback uri reports zero length: $uri")
+                        }
+                    } ?: throw PlaybackSourceException("无法播放本地音乐，请检查文件权限或重新添加文件夹")
+                    uri.toString()
+                } catch (error: SecurityException) {
+                    Log.w(TAG, "local playback permission denied: $uri", error)
+                    throw PlaybackSourceException("无法播放本地音乐，请检查文件权限或重新添加文件夹")
+                } catch (error: FileNotFoundException) {
+                    Log.w(TAG, "local playback file missing: $uri", error)
+                    throw PlaybackSourceException("无法播放本地音乐，请检查文件权限或重新添加文件夹")
+                } catch (error: IllegalArgumentException) {
+                    Log.w(TAG, "local playback uri invalid: $uri", error)
+                    throw PlaybackSourceException("无法播放本地音乐，请检查文件权限或重新添加文件夹")
+                } catch (error: IOException) {
+                    Log.w(TAG, "local playback uri open failed: $uri", error)
+                    throw PlaybackSourceException("无法播放本地音乐，请检查文件权限或重新添加文件夹")
+                }
+            }
+            "file" -> {
+                val file = runCatching { File(requireNotNull(uri.path)) }.getOrNull()
+                if (file?.exists() == true && file.canRead()) uri.toString() else {
+                    throw PlaybackSourceException("无法播放本地音乐，请检查文件权限或重新添加文件夹")
+                }
+            }
+            else -> throw PlaybackSourceException("无法播放本地音乐，请检查文件权限或重新添加文件夹")
+        }
     }
 
     suspend fun deleteBinding() {
@@ -1344,6 +1391,15 @@ class MusicRepository(
         val uriText = uri.toString()
         return context.contentResolver.persistedUriPermissions.any { permission ->
             permission.isReadPermission && permission.uri.toString() == uriText
+        }
+    }
+
+    private fun hasPersistedReadPermissionFor(uri: Uri): Boolean {
+        val uriText = uri.toString()
+        return context.contentResolver.persistedUriPermissions.any { permission ->
+            if (!permission.isReadPermission) return@any false
+            val treeUriText = permission.uri.toString()
+            uriText == treeUriText || uriText.startsWith("$treeUriText/")
         }
     }
 

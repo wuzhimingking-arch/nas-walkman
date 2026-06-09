@@ -35,8 +35,8 @@ android {
         applicationId = "tech.peakedge.naswalkman"
         minSdk = 26
         targetSdk = 36
-        versionCode = 13
-        versionName = "0.4.9"
+        versionCode = 14
+        versionName = "0.4.10"
     }
 
     signingConfigs {
