@@ -30,7 +30,7 @@ class AppContainer(context: Context) {
         AppDatabase::class.java,
         "nas_walkman.db",
     )
-        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
         .build()
     private val credentialCipher = CredentialCipher()
     private val credentialsProvider = DatabaseCredentialsProvider(database.nasDao(), credentialCipher)
@@ -163,5 +163,14 @@ private val MIGRATION_3_4 = object : Migration(3, 4) {
             WHERE sourceFolderId IS NULL
             """.trimIndent(),
         )
+    }
+}
+
+private val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE music_folders ADD COLUMN lastScanStatus TEXT")
+        db.execSQL("ALTER TABLE music_folders ADD COLUMN lastScanError TEXT")
+        db.execSQL("ALTER TABLE music_folders ADD COLUMN lastScannedFileCount INTEGER")
+        db.execSQL("ALTER TABLE music_folders ADD COLUMN lastScannedAudioCount INTEGER")
     }
 }
