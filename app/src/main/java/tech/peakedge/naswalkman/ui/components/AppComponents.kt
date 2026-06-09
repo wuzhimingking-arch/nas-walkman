@@ -496,6 +496,7 @@ fun MiniPlayerBar(
     artist: String,
     coverPath: String? = null,
     isPlaying: Boolean,
+    isLoading: Boolean = false,
     progress: Float,
     onOpen: () -> Unit,
     onPlaylist: () -> Unit,
@@ -551,17 +552,26 @@ fun MiniPlayerBar(
             }
             IconButton(
                 onClick = onToggle,
+                enabled = !isLoading,
                 modifier = Modifier
                     .size(44.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primary),
             ) {
-                Icon(
-                    if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                    contentDescription = if (isPlaying) "暂停" else "播放",
-                    tint = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.size(26.dp),
-                )
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(22.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
+                } else {
+                    Icon(
+                        if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                        contentDescription = if (isPlaying) "暂停" else "播放",
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(26.dp),
+                    )
+                }
             }
             IconButton(onClick = onNext, modifier = Modifier.size(40.dp)) {
                 Icon(Icons.Rounded.SkipNext, contentDescription = "下一首", modifier = Modifier.size(24.dp))

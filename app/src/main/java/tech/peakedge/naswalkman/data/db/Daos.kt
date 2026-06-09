@@ -1,6 +1,7 @@
 package tech.peakedge.naswalkman.data.db
 
 import androidx.room.Dao
+import androidx.room.Embedded
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
@@ -22,6 +23,36 @@ interface NasDao {
 
     @Query("DELETE FROM nas_servers")
     suspend fun clear()
+}
+
+@Dao
+interface MusicFolderDao {
+    @Query("SELECT * FROM music_folders ORDER BY createdAt")
+    fun observeFolders(): Flow<List<MusicFolderEntity>>
+
+    @Query("SELECT * FROM music_folders ORDER BY createdAt")
+    suspend fun getAll(): List<MusicFolderEntity>
+
+    @Query("SELECT * FROM music_folders WHERE id = :id")
+    suspend fun getById(id: Long): MusicFolderEntity?
+
+    @Query("SELECT * FROM music_folders WHERE sourceKey = :sourceKey LIMIT 1")
+    suspend fun getBySourceKey(sourceKey: String): MusicFolderEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(folder: MusicFolderEntity): Long
+
+    @Query("UPDATE music_folders SET includeSubfolders = :includeSubfolders, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun updateIncludeSubfolders(id: Long, includeSubfolders: Boolean, updatedAt: Long)
+
+    @Query("UPDATE music_folders SET songCount = :songCount, lastScannedAt = :lastScannedAt, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun updateScanStats(id: Long, songCount: Int, lastScannedAt: Long, updatedAt: Long)
+
+    @Query("DELETE FROM music_folders WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
+    @Query("DELETE FROM music_folders WHERE sourceType = :sourceType")
+    suspend fun deleteBySourceType(sourceType: MusicSourceType)
 }
 
 @Dao
@@ -59,6 +90,9 @@ interface TrackDao {
     @Query("SELECT * FROM tracks WHERE id = :id")
     suspend fun getTrack(id: String): TrackEntity?
 
+    @Query("SELECT * FROM tracks")
+    suspend fun getAllTracksOnce(): List<TrackEntity>
+
     @Query("SELECT * FROM tracks WHERE nasServerId = :nasServerId AND remotePath = :remotePath LIMIT 1")
     suspend fun getTrackByRemotePath(nasServerId: Long, remotePath: String): TrackEntity?
 
@@ -80,11 +114,26 @@ interface TrackDao {
     @Query("UPDATE tracks SET localCachePath = NULL, updatedAt = :updatedAt")
     suspend fun clearAllCachePaths(updatedAt: Long)
 
+    @Query("UPDATE tracks SET coverCachePath = NULL, updatedAt = :updatedAt")
+    suspend fun clearAllCoverCachePaths(updatedAt: Long)
+
     @Query("DELETE FROM tracks WHERE nasServerId = :nasServerId AND lastSeenScanId != :scanId")
     suspend fun deleteNotSeenInScan(nasServerId: Long, scanId: Long)
 
+    @Query("DELETE FROM tracks WHERE sourceFolderId = :sourceFolderId AND lastSeenScanId != :scanId")
+    suspend fun deleteNotSeenInSourceScan(sourceFolderId: Long, scanId: Long)
+
+    @Query("DELETE FROM tracks WHERE sourceFolderId = :sourceFolderId")
+    suspend fun deleteAllForSourceFolder(sourceFolderId: Long)
+
+    @Query("SELECT count(*) FROM tracks WHERE sourceFolderId = :sourceFolderId")
+    suspend fun countForSourceFolder(sourceFolderId: Long): Int
+
     @Query("DELETE FROM tracks WHERE nasServerId = :nasServerId")
     suspend fun deleteAllForNas(nasServerId: Long)
+
+    @Query("DELETE FROM tracks WHERE sourceType = :sourceType")
+    suspend fun deleteAllForSourceType(sourceType: MusicSourceType)
 
     @Query("DELETE FROM tracks")
     suspend fun deleteAll()
@@ -125,7 +174,7 @@ interface PlaylistDao {
     @Query("SELECT ifnull(max(sortOrder), -1) + 1 FROM playlist_tracks WHERE playlistId = :playlistId")
     suspend fun nextSortOrder(playlistId: Long): Int
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun addTrack(entity: PlaylistTrackEntity)
 
     @Query("DELETE FROM playlist_tracks WHERE playlistId = :playlistId AND trackId = :trackId")
@@ -137,6 +186,18 @@ interface PlayHistoryDao {
     @Insert
     suspend fun insert(entity: PlayHistoryEntity)
 
+    @Query(
+        """
+        SELECT t.*, count(h.id) AS playCount, max(h.playedAt) AS lastPlayedAt
+        FROM tracks t
+        INNER JOIN play_history h ON h.trackId = t.id
+        GROUP BY t.id
+        ORDER BY playCount DESC, lastPlayedAt DESC, lower(t.title), lower(t.fileName)
+        LIMIT :limit
+        """
+    )
+    fun observeMostPlayed(limit: Int = 100): Flow<List<TrackWithPlayCount>>
+
     @Query("DELETE FROM play_history")
     suspend fun clear()
 }
@@ -145,6 +206,9 @@ interface PlayHistoryDao {
 interface CacheDao {
     @Query("SELECT ifnull(sum(size), 0) FROM cache_items")
     fun observeCacheBytes(): Flow<Long>
+
+    @Query("SELECT * FROM cache_items ORDER BY cachedAt ASC")
+    suspend fun getAll(): List<CacheItemEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: CacheItemEntity)
@@ -155,3 +219,9 @@ interface CacheDao {
     @Query("DELETE FROM cache_items")
     suspend fun clear()
 }
+
+data class TrackWithPlayCount(
+    @Embedded val track: TrackEntity,
+    val playCount: Int,
+    val lastPlayedAt: Long?,
+)

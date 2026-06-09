@@ -11,6 +11,11 @@ enum class NasConnectionMode {
     WEBDAV_ADVANCED,
 }
 
+enum class MusicSourceType {
+    NAS,
+    LOCAL,
+}
+
 @Entity(tableName = "nas_servers")
 data class NasServerEntity(
     @PrimaryKey val id: Long = 1L,
@@ -34,9 +39,32 @@ data class NasServerEntity(
 )
 
 @Entity(
+    tableName = "music_folders",
+    indices = [
+        Index(value = ["sourceKey"], unique = true),
+        Index(value = ["sourceType"]),
+    ],
+)
+data class MusicFolderEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0L,
+    val sourceType: MusicSourceType,
+    val sourceKey: String,
+    val path: String,
+    val displayName: String,
+    val includeSubfolders: Boolean = true,
+    val nasServerId: Long? = null,
+    val songCount: Int? = null,
+    val lastScannedAt: Long? = null,
+    val createdAt: Long,
+    val updatedAt: Long,
+)
+
+@Entity(
     tableName = "tracks",
     indices = [
         Index(value = ["nasServerId", "remotePath"], unique = true),
+        Index(value = ["sourceFolderId"]),
+        Index(value = ["sourceType"]),
         Index(value = ["title"]),
         Index(value = ["isFavorite"]),
     ],
@@ -44,6 +72,8 @@ data class NasServerEntity(
 data class TrackEntity(
     @PrimaryKey val id: String,
     val nasServerId: Long,
+    val sourceType: MusicSourceType = MusicSourceType.NAS,
+    val sourceFolderId: Long? = null,
     val remotePath: String,
     val fileName: String,
     val title: String,
