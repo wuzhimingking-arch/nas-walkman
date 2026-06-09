@@ -30,7 +30,7 @@ class AppContainer(context: Context) {
         AppDatabase::class.java,
         "nas_walkman.db",
     )
-        .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
         .build()
     private val credentialCipher = CredentialCipher()
     private val credentialsProvider = DatabaseCredentialsProvider(database.nasDao(), credentialCipher)
@@ -82,6 +82,85 @@ private val MIGRATION_2_3 = object : Migration(2, 3) {
                 selectedMusicFolderName = musicRootPath,
                 selectedMusicDisplayPath = '已手动填写路径'
             WHERE selectedMusicRemotePath = ''
+            """.trimIndent(),
+        )
+    }
+}
+
+private val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS music_folders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                sourceType TEXT NOT NULL,
+                sourceKey TEXT NOT NULL,
+                path TEXT NOT NULL,
+                displayName TEXT NOT NULL,
+                includeSubfolders INTEGER NOT NULL DEFAULT 1,
+                nasServerId INTEGER,
+                songCount INTEGER,
+                lastScannedAt INTEGER,
+                createdAt INTEGER NOT NULL,
+                updatedAt INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_music_folders_sourceKey ON music_folders(sourceKey)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_music_folders_sourceType ON music_folders(sourceType)")
+        db.execSQL("ALTER TABLE tracks ADD COLUMN sourceType TEXT NOT NULL DEFAULT 'NAS'")
+        db.execSQL("ALTER TABLE tracks ADD COLUMN sourceFolderId INTEGER")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_tracks_sourceFolderId ON tracks(sourceFolderId)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_tracks_sourceType ON tracks(sourceType)")
+        db.execSQL(
+            """
+            INSERT OR IGNORE INTO music_folders (
+                sourceType,
+                sourceKey,
+                path,
+                displayName,
+                includeSubfolders,
+                nasServerId,
+                songCount,
+                lastScannedAt,
+                createdAt,
+                updatedAt
+            )
+            SELECT
+                'NAS',
+                'NAS:' || id || ':' || CASE
+                    WHEN selectedMusicRemotePath != '' THEN selectedMusicRemotePath
+                    ELSE musicRootPath
+                END,
+                CASE
+                    WHEN selectedMusicRemotePath != '' THEN selectedMusicRemotePath
+                    ELSE musicRootPath
+                END,
+                CASE
+                    WHEN selectedMusicDisplayPath != '' THEN selectedMusicDisplayPath
+                    WHEN selectedMusicRemotePath != '' THEN selectedMusicRemotePath
+                    ELSE musicRootPath
+                END,
+                1,
+                id,
+                NULL,
+                NULL,
+                createdAt,
+                updatedAt
+            FROM nas_servers
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            UPDATE tracks
+            SET sourceFolderId = (
+                SELECT id
+                FROM music_folders
+                WHERE music_folders.sourceType = 'NAS'
+                ORDER BY music_folders.createdAt
+                LIMIT 1
+            )
+            WHERE sourceFolderId IS NULL
             """.trimIndent(),
         )
     }

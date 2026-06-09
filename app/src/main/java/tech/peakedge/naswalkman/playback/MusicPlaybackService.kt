@@ -179,6 +179,7 @@ class MusicPlaybackService : MediaSessionService() {
         )
     }
 
+    @androidx.annotation.OptIn(UnstableApi::class)
     private fun logPlayerError(error: PlaybackException) {
         val currentPlayer = player
         val currentUrl = currentPlayer?.currentMediaItem?.localConfiguration?.uri?.toString()
@@ -197,6 +198,7 @@ class MusicPlaybackService : MediaSessionService() {
         )
     }
 
+    @androidx.annotation.OptIn(UnstableApi::class)
     private fun audioFormatSummary(tracks: Tracks): String {
         val audioFormats = mutableListOf<String>()
         for (group in tracks.groups) {

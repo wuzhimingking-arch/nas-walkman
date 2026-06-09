@@ -1,5 +1,7 @@
 package tech.peakedge.naswalkman.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -33,6 +35,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Cast
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.CloudDownload
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.Folder
@@ -58,6 +61,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -101,6 +105,8 @@ import androidx.compose.ui.unit.sp
 import androidx.media3.common.Player
 import kotlinx.coroutines.delay
 import tech.peakedge.naswalkman.BuildConfig
+import tech.peakedge.naswalkman.data.db.MusicFolderEntity
+import tech.peakedge.naswalkman.data.db.MusicSourceType
 import tech.peakedge.naswalkman.data.db.NasConnectionMode
 import tech.peakedge.naswalkman.data.db.PlaylistSummary
 import tech.peakedge.naswalkman.data.db.TrackEntity
@@ -145,7 +151,7 @@ fun MusicApp(viewModel: AppViewModel) {
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            if (state.nasServer != null && state.selectedTab != MainTab.Player) {
+            if (state.selectedTab != MainTab.Player) {
                 Column {
                     MiniPlayer(state, viewModel)
                     BottomNavigation(state.selectedTab, viewModel::selectTab)
@@ -168,19 +174,6 @@ fun MusicApp(viewModel: AppViewModel) {
 
             if (state.directoryPicker.isOpen) {
                 DirectoryPickerScreen(state, viewModel)
-            } else if (state.nasServer == null) {
-                NasBindingScreen(
-                    title = "连接 NAS",
-                    form = state.connectionForm,
-                    isBusy = state.isBusy,
-                    canChooseDirectory = state.isConnectionTested,
-                    onFormChange = viewModel::updateConnectionForm,
-                    onTest = { viewModel.testConnection() },
-                    onOpenDirectoryPicker = viewModel::openDirectoryPicker,
-                    onManualPathSave = viewModel::setManualMusicPath,
-                    onManualPathTest = viewModel::testManualMusicPath,
-                    onSave = { viewModel.saveNas() },
-                )
             } else {
                 when (state.selectedTab) {
                     MainTab.Library -> LibraryScreen(state, viewModel)
@@ -641,14 +634,44 @@ private fun DirectoryPickerScreen(state: AppUiState, viewModel: AppViewModel) {
         },
         bottomBar = {
             SurfaceLike {
-                Button(
-                    onClick = viewModel::chooseCurrentPickerDirectory,
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(16.dp),
-                    enabled = !picker.isLoading,
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    Text("选择当前文件夹作为音乐目录")
+                    if (picker.mode == DirectoryPickerMode.AddMusicSource) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("包含子文件夹", fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    if (picker.includeSubfolders) "扫描当前文件夹及所有下级目录" else "只扫描当前文件夹",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Switch(
+                                checked = picker.includeSubfolders,
+                                onCheckedChange = viewModel::setDirectoryPickerIncludeSubfolders,
+                            )
+                        }
+                    }
+                    Button(
+                        onClick = viewModel::chooseCurrentPickerDirectory,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !picker.isLoading,
+                    ) {
+                        Text(
+                            if (picker.mode == DirectoryPickerMode.AddMusicSource) {
+                                "添加当前 NAS 文件夹"
+                            } else {
+                                "选择当前文件夹作为音乐目录"
+                            },
+                        )
+                    }
                 }
             }
         },
@@ -778,12 +801,12 @@ private fun connectionModeLabel(mode: NasConnectionMode): String = when (mode) {
     NasConnectionMode.WEBDAV_ADVANCED -> "WebDAV 高级"
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LibraryScreen(state: AppUiState, viewModel: AppViewModel) {
     var showPlaylistDialog by remember { mutableStateOf(false) }
     var playlistName by remember { mutableStateOf("") }
     var showSearch by remember { mutableStateOf(false) }
+    var sortMode by remember { mutableStateOf(SongSortMode.Title) }
 
     if (showPlaylistDialog) {
         AlertDialog(
@@ -810,23 +833,16 @@ private fun LibraryScreen(state: AppUiState, viewModel: AppViewModel) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
-                title = { Text("音乐库", fontWeight = FontWeight.Bold) },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                    titleContentColor = MaterialTheme.colorScheme.onBackground,
-                ),
-                actions = {
-                    IconButton(onClick = { showSearch = !showSearch }) {
-                        Icon(Icons.Rounded.Search, contentDescription = "搜索")
-                    }
-                    IconButton(onClick = { viewModel.scanLibrary() }) {
-                        Icon(Icons.Rounded.Refresh, contentDescription = "扫描音乐库")
-                    }
-                    IconButton(onClick = { viewModel.selectTab(MainTab.Settings) }) {
-                        Icon(Icons.Rounded.Settings, contentDescription = "设置")
-                    }
-                },
+            LibraryHeader(
+                title = state.libraryPage.title(),
+                canBack = state.libraryPage != LibraryPage.Home,
+                showSort = state.libraryPage.supportsSongSort(),
+                sortMode = sortMode,
+                onSortModeChange = { sortMode = it },
+                onBack = viewModel::openLibraryHome,
+                onSearch = { showSearch = !showSearch },
+                onRefresh = viewModel::scanLibrary,
+                onSettings = { viewModel.selectTab(MainTab.Settings) },
             )
         },
     ) { padding ->
@@ -835,26 +851,8 @@ private fun LibraryScreen(state: AppUiState, viewModel: AppViewModel) {
                 .fillMaxSize()
                 .padding(padding)
                 .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(LibrarySectionSpacing),
         ) {
-            item {
-                NasStatusPill(
-                    serverName = state.nasServer?.name ?: "家里的 NAS",
-                    onClick = { viewModel.selectTab(MainTab.Settings) },
-                )
-                if (state.scanProgress.isRunning) {
-                    Spacer(Modifier.height(8.dp))
-                    AppCard {
-                        Text("正在扫描音乐库", style = MaterialTheme.typography.titleSmall)
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        Text(
-                            "已发现 ${state.scanProgress.discovered} 首歌曲",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
             if (showSearch || state.searchQuery.isNotBlank()) {
                 item {
                     AppTextField(
@@ -865,61 +863,453 @@ private fun LibraryScreen(state: AppUiState, viewModel: AppViewModel) {
                     )
                 }
             }
-            if (state.searchQuery.isNotBlank()) {
+            if (state.libraryPage == LibraryPage.Home && state.searchQuery.isNotBlank()) {
                 trackSection(
                     title = "搜索结果",
-                    tracks = state.searchResults,
+                    tracks = sortTracks(state.searchResults, sortMode),
                     emptyText = "没有找到匹配的歌曲",
                     state = state,
                     viewModel = viewModel,
                 )
             } else {
-                item {
-                    RecentPlaybackCard(state.recent, onClick = { })
-                }
-                item {
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                        LibraryMetricCard(
-                            icon = Icons.Rounded.Favorite,
-                            iconTint = AppFavorite,
-                            title = "收藏歌曲",
-                            value = "${state.favorites.size} 首",
-                            onClick = { },
-                        )
-                        LibraryMetricCard(
-                            icon = Icons.Rounded.MusicNote,
-                            iconTint = MaterialTheme.colorScheme.primary,
-                            title = "全部歌曲",
-                            value = "${state.tracks.size} 首",
-                            onClick = { },
-                        )
-                    }
-                }
-                item {
-                    AppSectionTitle("我的歌单") {
-                        TextButton(onClick = { showPlaylistDialog = true }) {
-                            Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("新建")
-                        }
-                    }
-                    if (state.playlists.isNotEmpty()) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            state.playlists.take(3).forEach { playlist ->
-                                AssistChip(
-                                    onClick = { },
-                                    label = { Text("${playlist.name} · ${playlist.trackCount}") },
-                                )
-                            }
-                        }
-                    }
-                }
-                trackSection("全部歌曲", state.tracks, "请先扫描音乐库", state, viewModel)
+                libraryPageContent(
+                    state = state,
+                    viewModel = viewModel,
+                    sortMode = sortMode,
+                    onCreatePlaylist = { showPlaylistDialog = true },
+                )
             }
             item { Spacer(Modifier.height(96.dp)) }
         }
     }
 }
+
+private val LibrarySectionSpacing = 12.dp
+private val LibrarySectionTitleBottomSpacing = 8.dp
+
+private enum class SongSortMode(val label: String) {
+    Title("按标题"),
+    Artist("按歌手"),
+    Duration("按时长"),
+}
+
+private data class ArtistBucket(
+    val name: String,
+    val songs: List<TrackEntity>,
+)
+
+@Composable
+private fun LibraryHeader(
+    title: String,
+    canBack: Boolean,
+    showSort: Boolean,
+    sortMode: SongSortMode,
+    onSortModeChange: (SongSortMode) -> Unit,
+    onBack: () -> Unit,
+    onSearch: () -> Unit,
+    onRefresh: () -> Unit,
+    onSettings: () -> Unit,
+) {
+    var sortMenuOpen by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(start = 8.dp, end = 4.dp, top = 0.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (canBack) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回")
+            }
+        } else {
+            Spacer(Modifier.width(8.dp))
+        }
+        Text(
+            title,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (showSort) {
+            Box {
+                IconButton(onClick = { sortMenuOpen = true }) {
+                    Icon(Icons.AutoMirrored.Rounded.Sort, contentDescription = "排序")
+                }
+                DropdownMenu(expanded = sortMenuOpen, onDismissRequest = { sortMenuOpen = false }) {
+                    SongSortMode.entries.forEach { mode ->
+                        DropdownMenuItem(
+                            text = { Text(mode.label) },
+                            onClick = {
+                                onSortModeChange(mode)
+                                sortMenuOpen = false
+                            },
+                        )
+                    }
+                }
+            }
+        }
+        IconButton(onClick = onSearch) {
+            Icon(Icons.Rounded.Search, contentDescription = "搜索")
+        }
+        IconButton(onClick = onRefresh) {
+            Icon(Icons.Rounded.Refresh, contentDescription = "扫描音乐库")
+        }
+        IconButton(onClick = onSettings) {
+            Icon(Icons.Rounded.Settings, contentDescription = "设置")
+        }
+    }
+}
+
+private fun LibraryPage.title(): String = when (this) {
+    LibraryPage.Home -> "音乐库"
+    LibraryPage.AllSongs -> "全部歌曲"
+    LibraryPage.Favorites -> "收藏歌曲"
+    LibraryPage.MostPlayed -> "最常播放"
+    LibraryPage.Artists -> "按歌手"
+    LibraryPage.Singles -> "单曲"
+    is LibraryPage.ArtistSongs -> artistName
+    is LibraryPage.PlaylistDetail -> name
+}
+
+private fun LibraryPage.supportsSongSort(): Boolean = when (this) {
+    LibraryPage.Home,
+    LibraryPage.Artists,
+    LibraryPage.MostPlayed,
+    -> false
+    else -> true
+}
+
+private fun androidx.compose.foundation.lazy.LazyListScope.libraryPageContent(
+    state: AppUiState,
+    viewModel: AppViewModel,
+    sortMode: SongSortMode,
+    onCreatePlaylist: () -> Unit,
+) {
+    when (val page = state.libraryPage) {
+        LibraryPage.Home -> libraryHomeContent(state, viewModel, onCreatePlaylist)
+        LibraryPage.AllSongs -> trackListPage(
+            title = "全部歌曲",
+            tracks = state.tracks,
+            emptyText = "请先扫描音乐库",
+            state = state,
+            viewModel = viewModel,
+            sortMode = sortMode,
+        )
+        LibraryPage.Favorites -> trackListPage(
+            title = "收藏歌曲",
+            tracks = state.favorites,
+            emptyText = "还没有收藏歌曲",
+            state = state,
+            viewModel = viewModel,
+            sortMode = sortMode,
+            preserveOrder = true,
+        )
+        LibraryPage.MostPlayed -> trackListPage(
+            title = "最常播放",
+            tracks = state.mostPlayed.map { it.track },
+            emptyText = "暂无播放记录，歌曲真正开始播放后会记录次数",
+            state = state,
+            viewModel = viewModel,
+            sortMode = sortMode,
+        )
+        LibraryPage.Artists -> artistGroupsPage(state, viewModel)
+        LibraryPage.Singles -> trackListPage(
+            title = "单曲",
+            tracks = artistBuckets(state.tracks).singles,
+            emptyText = "暂无单曲",
+            state = state,
+            viewModel = viewModel,
+            sortMode = sortMode,
+        )
+        is LibraryPage.ArtistSongs -> trackListPage(
+            title = page.artistName,
+            tracks = state.tracks.filter { artistNameForGrouping(it) == page.artistName },
+            emptyText = "这个歌手下暂无歌曲",
+            state = state,
+            viewModel = viewModel,
+            sortMode = sortMode,
+        )
+        is LibraryPage.PlaylistDetail -> playlistDetailPage(page, state, viewModel, sortMode)
+    }
+}
+
+private fun androidx.compose.foundation.lazy.LazyListScope.libraryHomeContent(
+    state: AppUiState,
+    viewModel: AppViewModel,
+    onCreatePlaylist: () -> Unit,
+) {
+    if (state.musicFolders.isEmpty()) {
+        item {
+            EmptyStatePanel(
+                title = "还没有添加音乐文件夹\n请到设置中添加 NAS 或本地音乐文件夹",
+                actionText = "音乐文件夹管理",
+                onAction = viewModel::openMusicFolderManager,
+            )
+        }
+        return
+    }
+    item {
+        NasStatusPill(
+            serverName = state.nasServer?.name ?: "家里的 NAS",
+            onClick = { viewModel.selectTab(MainTab.Settings) },
+        )
+        if (state.scanProgress.isRunning) {
+            Spacer(Modifier.height(8.dp))
+            AppCard {
+                Text("正在扫描音乐库", style = MaterialTheme.typography.titleSmall)
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Text(
+                    "已发现 ${state.scanProgress.discovered} 首歌曲",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+    item {
+        RecentPlaybackCard(state.recent, onClick = viewModel::openMostPlayed)
+    }
+    item {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+            LibraryMetricCard(
+                icon = Icons.Rounded.Favorite,
+                iconTint = AppFavorite,
+                title = "收藏歌曲",
+                value = "${state.favorites.size} 首",
+                onClick = viewModel::openFavorites,
+            )
+            LibraryMetricCard(
+                icon = Icons.Rounded.MusicNote,
+                iconTint = MaterialTheme.colorScheme.primary,
+                title = "全部歌曲",
+                value = "${state.tracks.size} 首",
+                onClick = viewModel::openAllSongs,
+            )
+        }
+    }
+    item {
+        AppSectionTitle("我的歌单") {
+            TextButton(onClick = onCreatePlaylist) {
+                Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("新建")
+            }
+        }
+        Spacer(Modifier.height(LibrarySectionTitleBottomSpacing))
+        if (state.playlists.isEmpty()) {
+            EmptyCard("暂无歌单，点击右侧新建")
+        } else {
+            AppCard(contentPadding = 0.dp) {
+                state.playlists.forEachIndexed { index, playlist ->
+                    if (index > 0) HorizontalDivider()
+                    LibraryMenuRow(
+                        icon = Icons.AutoMirrored.Rounded.QueueMusic,
+                        title = playlist.name,
+                        subtitle = "${playlist.trackCount} 首",
+                        onClick = { viewModel.openPlaylist(playlist) },
+                    )
+                }
+            }
+        }
+    }
+    item {
+        val buckets = artistBuckets(state.tracks)
+        AppSectionTitle("分类浏览")
+        Spacer(Modifier.height(LibrarySectionTitleBottomSpacing))
+        AppCard(contentPadding = 0.dp) {
+            LibraryMenuRow(
+                icon = Icons.Rounded.PlayCircle,
+                title = "最常播放",
+                subtitle = if (state.mostPlayed.isEmpty()) "暂无播放记录" else "${state.mostPlayed.size} 首",
+                onClick = viewModel::openMostPlayed,
+            )
+            HorizontalDivider()
+            LibraryMenuRow(
+                icon = Icons.Rounded.Person,
+                title = "按歌手",
+                subtitle = "${buckets.artists.size} 位歌手",
+                onClick = viewModel::openArtists,
+            )
+            HorizontalDivider()
+            LibraryMenuRow(
+                icon = Icons.Rounded.MusicNote,
+                title = "单曲",
+                subtitle = "${buckets.singles.size} 首",
+                onClick = viewModel::openSingles,
+            )
+        }
+    }
+}
+
+private fun androidx.compose.foundation.lazy.LazyListScope.trackListPage(
+    title: String,
+    tracks: List<TrackEntity>,
+    emptyText: String,
+    state: AppUiState,
+    viewModel: AppViewModel,
+    sortMode: SongSortMode,
+    playlistIdForRemove: Long? = null,
+    preserveOrder: Boolean = false,
+) {
+    val filtered = filterTracks(tracks, state.searchQuery)
+    val sorted = if (preserveOrder) filtered else sortTracks(filtered, sortMode)
+    item {
+        Text(
+            "${sorted.size} 首",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    trackSection(
+        title = title,
+        tracks = sorted,
+        emptyText = if (state.searchQuery.isBlank()) emptyText else "没有找到匹配的歌曲",
+        state = state,
+        viewModel = viewModel,
+        showTitle = false,
+        playlistIdForRemove = playlistIdForRemove,
+    )
+}
+
+private fun androidx.compose.foundation.lazy.LazyListScope.playlistDetailPage(
+    page: LibraryPage.PlaylistDetail,
+    state: AppUiState,
+    viewModel: AppViewModel,
+    sortMode: SongSortMode,
+) {
+    item {
+        AppCard {
+            Text(page.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(
+                "${state.selectedPlaylistTracks.size} 首歌曲",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+    trackListPage(
+        title = page.name,
+        tracks = state.selectedPlaylistTracks,
+        emptyText = "暂无歌曲，请从歌曲菜单添加",
+        state = state,
+        viewModel = viewModel,
+        sortMode = sortMode,
+        playlistIdForRemove = page.id,
+    )
+}
+
+private fun androidx.compose.foundation.lazy.LazyListScope.artistGroupsPage(
+    state: AppUiState,
+    viewModel: AppViewModel,
+) {
+    val buckets = artistBuckets(state.tracks)
+    if (buckets.artists.isEmpty() && buckets.singles.isEmpty()) {
+        item {
+            EmptyStatePanel(
+                title = "暂无歌手数据\n请先扫描音乐库",
+                actionText = "扫描音乐库",
+                onAction = viewModel::scanLibrary,
+            )
+        }
+        return
+    }
+    items(buckets.artists, key = { it.name }) { bucket ->
+        LibraryMenuRow(
+            icon = Icons.Rounded.Person,
+            title = bucket.name,
+            subtitle = "${bucket.songs.size} 首",
+            onClick = { viewModel.openArtistSongs(bucket.name) },
+        )
+    }
+    if (buckets.singles.isNotEmpty()) {
+        item {
+            LibraryMenuRow(
+                icon = Icons.Rounded.MusicNote,
+                title = "单曲",
+                subtitle = "${buckets.singles.size} 首",
+                onClick = viewModel::openSingles,
+            )
+        }
+    }
+}
+
+@Composable
+private fun LibraryMenuRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        SoftIconBadge(icon = icon, tint = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Icon(
+            Icons.Rounded.ChevronRight,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+private data class ArtistBuckets(
+    val artists: List<ArtistBucket>,
+    val singles: List<TrackEntity>,
+)
+
+private fun artistBuckets(tracks: List<TrackEntity>): ArtistBuckets {
+    val grouped = tracks.groupBy(::artistNameForGrouping)
+    val artists = grouped
+        .filterValues { it.size >= MIN_ARTIST_GROUP_SIZE }
+        .map { (name, songs) -> ArtistBucket(name, songs.sortedBy { it.title.lowercase() }) }
+        .sortedWith(compareByDescending<ArtistBucket> { it.songs.size }.thenBy { it.name.lowercase() })
+    val singles = grouped
+        .filterValues { it.size < MIN_ARTIST_GROUP_SIZE }
+        .values
+        .flatten()
+        .sortedBy { it.title.lowercase() }
+    return ArtistBuckets(artists = artists, singles = singles)
+}
+
+private fun artistNameForGrouping(track: TrackEntity): String =
+    track.artist?.trim()?.takeIf { it.isNotBlank() } ?: "未知歌手"
+
+private fun filterTracks(tracks: List<TrackEntity>, query: String): List<TrackEntity> {
+    val keyword = query.trim()
+    if (keyword.isBlank()) return tracks
+    return tracks.filter { track ->
+        listOf(track.title, track.artist, track.album, track.fileName, track.remotePath)
+            .filterNotNull()
+            .any { it.contains(keyword, ignoreCase = true) }
+    }
+}
+
+private fun sortTracks(tracks: List<TrackEntity>, sortMode: SongSortMode): List<TrackEntity> = when (sortMode) {
+    SongSortMode.Title -> tracks.sortedWith(compareBy({ it.title.lowercase() }, { it.fileName.lowercase() }))
+    SongSortMode.Artist -> tracks.sortedWith(compareBy({ artistNameForGrouping(it).lowercase() }, { it.title.lowercase() }))
+    SongSortMode.Duration -> tracks.sortedWith(compareByDescending<TrackEntity> { it.durationMs ?: 0L }.thenBy { it.title.lowercase() })
+}
+
+private const val MIN_ARTIST_GROUP_SIZE = 3
 
 @Composable
 private fun RecentPlaybackCard(tracks: List<TrackEntity>, onClick: () -> Unit) {
@@ -1048,41 +1438,61 @@ private fun androidx.compose.foundation.lazy.LazyListScope.trackSection(
     emptyText: String,
     state: AppUiState,
     viewModel: AppViewModel,
+    showTitle: Boolean = true,
+    playlistIdForRemove: Long? = null,
 ) {
-    item {
-        if (title == "全部歌曲") {
-            AllSongsSectionTitle(tracks.size)
-        } else {
-            AppSectionTitle(title)
+    if (showTitle) {
+        item {
+            if (title == "全部歌曲") {
+                AllSongsSectionTitle(tracks.size)
+            } else {
+                AppSectionTitle(title)
+            }
         }
     }
     if (tracks.isEmpty()) {
         item {
             val isAllSongs = title == "全部歌曲"
             val isScanning = state.scanProgress.isRunning && isAllSongs
+            val hasNoFolders = state.musicFolders.isEmpty()
             EmptyStatePanel(
                 title = if (isScanning) {
                     "正在扫描音乐库\n已发现 ${state.scanProgress.discovered} 首歌曲"
+                } else if (isAllSongs && hasNoFolders) {
+                    "还没有添加音乐文件夹\n请到设置中添加 NAS 或本地音乐文件夹"
                 } else if (isAllSongs) {
-                    "音乐库为空\n请在设置中确认音乐目录，然后扫描音乐库"
+                    "音乐库为空\n请重新扫描音乐文件夹"
                 } else {
                     emptyText
                 },
-                actionText = if (isScanning || !isAllSongs) null else "扫描音乐库",
-                onAction = if (isScanning || !isAllSongs) null else viewModel::scanLibrary,
+                actionText = when {
+                    isScanning || !isAllSongs -> null
+                    hasNoFolders -> "音乐文件夹管理"
+                    else -> "扫描音乐库"
+                },
+                onAction = when {
+                    isScanning || !isAllSongs -> null
+                    hasNoFolders -> viewModel::openMusicFolderManager
+                    else -> viewModel::scanLibrary
+                },
             )
         }
     } else {
-        items(tracks.take(60), key = { it.id }) { track ->
+        items(tracks, key = { it.id }) { track ->
             TrackRow(
                 track = track,
                 playlists = state.playlists,
                 isCurrent = state.currentTrackId == track.id,
-                isPreparing = state.preparingTrackId == track.id,
+                isPreparing = state.playbackStatus == PlaybackUiStatus.Loading && state.preparingTrackId == track.id,
+                showRemoveFromPlaylist = playlistIdForRemove != null,
                 onPlay = { viewModel.playTrack(track, tracks) },
                 onFavorite = { viewModel.toggleFavorite(track) },
                 onCache = { viewModel.cacheTrack(track) },
-                onAddToPlaylist = { playlist -> viewModel.addToPlaylist(playlist.id, track) },
+                onAddToPlaylists = { playlistIds -> viewModel.addToPlaylists(playlistIds, track) },
+                onRemoveFromPlaylist = {
+                    playlistIdForRemove?.let { playlistId -> viewModel.removeFromPlaylist(playlistId, track) }
+                },
+                onVisible = { viewModel.prepareVisibleTrack(track) },
             )
         }
     }
@@ -1135,7 +1545,8 @@ private fun FolderScreen(state: AppUiState, viewModel: AppViewModel) {
 
 @Composable
 private fun PlayerScreen(state: AppUiState, viewModel: AppViewModel) {
-    val track = state.currentTrack
+    val isPreparing = state.playbackStatus == PlaybackUiStatus.Loading && state.preparingTrackId != null
+    val track = state.preparingTrack ?: state.currentTrack
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -1199,7 +1610,7 @@ private fun PlayerScreen(state: AppUiState, viewModel: AppViewModel) {
                         )
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            track?.artist ?: "从音乐库或文件夹选择一首歌",
+                            if (isPreparing) "切换中…" else track?.artist ?: "从音乐库或文件夹选择一首歌",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -1255,7 +1666,7 @@ private fun PlayerScreen(state: AppUiState, viewModel: AppViewModel) {
                 PlayerControlButton(
                     icon = if (state.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                     contentDescription = if (state.isPlaying) "暂停" else "播放",
-                    onClick = viewModel::togglePlayback,
+                    onClick = { if (!isPreparing) viewModel.togglePlayback() },
                     large = true,
                 )
                 PlayerControlButton(
@@ -1511,6 +1922,10 @@ private fun QualityChip(text: String) {
 
 @Composable
 private fun SettingsScreen(state: AppUiState, viewModel: AppViewModel) {
+    if (state.showMusicFolderManager) {
+        MusicFolderManagerScreen(state = state, viewModel = viewModel)
+        return
+    }
     var showConnectionEditor by remember { mutableStateOf(false) }
     val server = state.nasServer
     val musicDirectory = server?.selectedMusicDisplayPath
@@ -1539,6 +1954,12 @@ private fun SettingsScreen(state: AppUiState, viewModel: AppViewModel) {
         }
         item {
             SettingGroupCard("连接设置") {
+                SettingRow(
+                    title = "音乐文件夹管理",
+                    value = "${state.musicFolders.size} 个来源",
+                    subtitle = "添加 NAS 或本地音乐文件夹",
+                    onClick = viewModel::openMusicFolderManager,
+                )
                 SettingRow(
                     title = "连接方式",
                     value = server?.let { connectionModeLabel(it.mode) } ?: "未连接",
@@ -1611,6 +2032,24 @@ private fun SettingsScreen(state: AppUiState, viewModel: AppViewModel) {
                     subtitle = "更新音乐库",
                     checked = state.settings.autoScanOnStart,
                     onCheckedChange = viewModel::setAutoScan,
+                )
+            }
+        }
+        item {
+            SettingGroupCard("音乐库维护") {
+                SettingRow(
+                    title = "获取歌曲信息",
+                    value = when {
+                        state.songInfoFetchProgress.isRunning -> "进行中"
+                        state.songInfoFetchProgress.isComplete -> "已完成"
+                        else -> null
+                    },
+                    subtitle = "读取封面、歌手、时长、歌词、专辑和标题",
+                    onClick = viewModel::fetchSongInfo,
+                )
+                SongInfoFetchProgressView(
+                    progress = state.songInfoFetchProgress,
+                    onCancel = viewModel::cancelSongInfoFetch,
                 )
             }
         }
@@ -1693,6 +2132,232 @@ private fun SettingsScreen(state: AppUiState, viewModel: AppViewModel) {
             }
         }
         item { Spacer(Modifier.height(18.dp)) }
+    }
+}
+
+@Composable
+private fun MusicFolderManagerScreen(state: AppUiState, viewModel: AppViewModel) {
+    var localIncludeSubfolders by remember { mutableStateOf(true) }
+    var nasIncludeSubfolders by remember { mutableStateOf(true) }
+    val localFolderLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        uri?.let { viewModel.addLocalMusicFolder(it, localIncludeSubfolders) }
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = viewModel::closeMusicFolderManager) {
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回")
+                }
+                Text("音乐文件夹管理", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            }
+        }
+        item {
+            SettingGroupCard("添加音乐文件夹") {
+                IncludeSubfolderRow(
+                    title = "本地文件夹包含子文件夹",
+                    checked = localIncludeSubfolders,
+                    onCheckedChange = { localIncludeSubfolders = it },
+                )
+                SettingRow(
+                    title = "添加手机本地文件夹",
+                    value = "使用系统文件夹选择器",
+                    onClick = { localFolderLauncher.launch(null) },
+                )
+                HorizontalDivider()
+                IncludeSubfolderRow(
+                    title = "NAS 文件夹包含子文件夹",
+                    checked = nasIncludeSubfolders,
+                    onCheckedChange = { nasIncludeSubfolders = it },
+                )
+                SettingRow(
+                    title = "添加 NAS 文件夹",
+                    value = if (state.nasServer == null) "请先登录 NAS 后再添加 NAS 文件夹" else state.nasServer.name,
+                    onClick = { viewModel.openNasFolderPickerForSource(nasIncludeSubfolders) },
+                )
+            }
+        }
+        if (state.scanProgress.isRunning) {
+            item {
+                AppCard {
+                    Text("正在扫描音乐文件夹", style = MaterialTheme.typography.titleSmall)
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text(
+                        "已发现 ${state.scanProgress.discovered} 首歌曲",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        if (state.musicFolders.isEmpty()) {
+            item {
+                EmptyStatePanel(
+                    title = "还没有添加音乐文件夹\n请添加 NAS 或本地音乐文件夹",
+                    actionText = null,
+                    onAction = null,
+                )
+            }
+        } else {
+            items(state.musicFolders, key = { it.id }) { folder ->
+                MusicFolderCard(
+                    folder = folder,
+                    onRescan = { viewModel.rescanMusicFolder(folder) },
+                    onToggleInclude = { viewModel.setMusicFolderIncludeSubfolders(folder, it) },
+                    onDelete = { viewModel.deleteMusicFolder(folder) },
+                )
+            }
+        }
+        item { Spacer(Modifier.height(96.dp)) }
+    }
+}
+
+@Composable
+private fun IncludeSubfolderRow(
+    title: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.SemiBold)
+            Text(
+                if (checked) "扫描当前文件夹及所有下级目录" else "只扫描当前文件夹",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+@Composable
+private fun MusicFolderCard(
+    folder: MusicFolderEntity,
+    onRescan: () -> Unit,
+    onToggleInclude: (Boolean) -> Unit,
+    onDelete: () -> Unit,
+) {
+    AppCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SoftIconBadge(icon = Icons.Rounded.Folder, tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(folder.displayName, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    folder.path,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            QualityChip(sourceTypeLabel(folder.sourceType))
+            QualityChip(if (folder.includeSubfolders) "包含子文件夹" else "仅当前文件夹")
+            folder.songCount?.let { QualityChip("$it 首") }
+        }
+        IncludeSubfolderRow(
+            title = "包含子文件夹",
+            checked = folder.includeSubfolders,
+            onCheckedChange = onToggleInclude,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            TextButton(onClick = onRescan) {
+                Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("重新扫描")
+            }
+            TextButton(onClick = onDelete) {
+                Icon(Icons.Rounded.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("删除")
+            }
+        }
+    }
+}
+
+private fun sourceTypeLabel(type: MusicSourceType): String = when (type) {
+    MusicSourceType.NAS -> "NAS"
+    MusicSourceType.LOCAL -> "本地"
+}
+
+@Composable
+private fun SongInfoFetchProgressView(
+    progress: SongInfoFetchProgress,
+    onCancel: () -> Unit,
+) {
+    if (!progress.isRunning && !progress.isComplete && progress.statusText.isBlank()) return
+
+    Column(
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (progress.totalCount > 0) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    progress.currentTrackName.ifBlank { "准备获取歌曲信息" },
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    "（${progress.currentIndex}/${progress.totalCount}）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            LinearProgressIndicator(
+                progress = { progress.progress.coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        Text(
+            progress.statusText.ifBlank { "正在读取：封面 / 歌手 / 时长 / 歌词 / 专辑" },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (progress.isComplete && progress.totalCount > 0) {
+            Text(
+                "总计 ${progress.totalCount} 首，跳过 ${progress.skippedCount} 首，更新 ${progress.successCount} 首，失败 ${progress.failureCount} 首",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (progress.isRunning) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = onCancel) {
+                    Text("取消")
+                }
+            }
+        }
     }
 }
 
@@ -1818,12 +2483,74 @@ private fun TrackRow(
     playlists: List<PlaylistSummary>,
     isCurrent: Boolean,
     isPreparing: Boolean,
+    showRemoveFromPlaylist: Boolean = false,
     onPlay: () -> Unit,
     onFavorite: () -> Unit,
     onCache: () -> Unit,
-    onAddToPlaylist: (PlaylistSummary) -> Unit,
+    onAddToPlaylists: (Set<Long>) -> Unit,
+    onRemoveFromPlaylist: () -> Unit = {},
+    onVisible: () -> Unit = {},
 ) {
     var menuOpen by remember { mutableStateOf(false) }
+    var showPlaylistPicker by remember { mutableStateOf(false) }
+    var selectedPlaylistIds by remember(track.id, playlists) { mutableStateOf<Set<Long>>(emptySet()) }
+    LaunchedEffect(track.id, track.coverCachePath, track.artist, track.durationMs) {
+        onVisible()
+    }
+    if (showPlaylistPicker) {
+        AlertDialog(
+            onDismissRequest = { showPlaylistPicker = false },
+            title = { Text("加入歌单") },
+            text = {
+                if (playlists.isEmpty()) {
+                    Text("暂无歌单，请先在音乐库新建歌单。")
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        playlists.forEach { playlist ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable {
+                                        selectedPlaylistIds = selectedPlaylistIds.toggle(playlist.id)
+                                    }
+                                    .padding(vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Checkbox(
+                                    checked = selectedPlaylistIds.contains(playlist.id),
+                                    onCheckedChange = {
+                                        selectedPlaylistIds = selectedPlaylistIds.toggle(playlist.id)
+                                    },
+                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(playlist.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(
+                                        "${playlist.trackCount} 首",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = selectedPlaylistIds.isNotEmpty(),
+                    onClick = {
+                        onAddToPlaylists(selectedPlaylistIds)
+                        selectedPlaylistIds = emptySet()
+                        showPlaylistPicker = false
+                    },
+                ) { Text("加入") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPlaylistPicker = false }) { Text("取消") }
+            },
+        )
+    }
     Box(modifier = Modifier.fillMaxWidth()) {
         TrackListItem(
             title = track.title,
@@ -1841,16 +2568,27 @@ private fun TrackRow(
                 text = { Text(if (track.isFavorite) "取消收藏" else "收藏") },
                 onClick = { menuOpen = false; onFavorite() },
             )
+            DropdownMenuItem(
+                text = { Text("加入歌单") },
+                onClick = {
+                    menuOpen = false
+                    selectedPlaylistIds = emptySet()
+                    showPlaylistPicker = true
+                },
+            )
             DropdownMenuItem(text = { Text("缓存到本地") }, onClick = { menuOpen = false; onCache() })
-            playlists.forEach { playlist ->
+            if (showRemoveFromPlaylist) {
                 DropdownMenuItem(
-                    text = { Text("添加到 ${playlist.name}") },
-                    onClick = { menuOpen = false; onAddToPlaylist(playlist) },
+                    text = { Text("从歌单移除") },
+                    onClick = { menuOpen = false; onRemoveFromPlaylist() },
                 )
             }
         }
     }
 }
+
+private fun Set<Long>.toggle(value: Long): Set<Long> =
+    if (contains(value)) this - value else this + value
 
 @Composable
 private fun FolderItemRow(item: RemoteItem, onClick: () -> Unit) {
@@ -1887,7 +2625,8 @@ private fun FolderItemRow(item: RemoteItem, onClick: () -> Unit) {
 
 @Composable
 private fun MiniPlayer(state: AppUiState, viewModel: AppViewModel) {
-    val track = state.currentTrack ?: return
+    val isPreparing = state.playbackStatus == PlaybackUiStatus.Loading && state.preparingTrackId != null
+    val track = state.preparingTrack ?: state.currentTrack ?: return
     val progress = if (state.playbackDurationMs > 0L) {
         state.playbackPositionMs.toFloat() / state.playbackDurationMs.toFloat()
     } else {
@@ -1895,13 +2634,14 @@ private fun MiniPlayer(state: AppUiState, viewModel: AppViewModel) {
     }
     MiniPlayerBar(
         title = track.title,
-        artist = track.artist.orEmpty(),
+        artist = if (isPreparing) "切换中…" else track.artist.orEmpty(),
         coverPath = track.coverCachePath,
-        isPlaying = state.isPlaying,
-        progress = progress,
+        isPlaying = state.isPlaying && !isPreparing,
+        isLoading = isPreparing,
+        progress = if (isPreparing) 0f else progress,
         onOpen = { viewModel.selectTab(MainTab.Player) },
         onPlaylist = { viewModel.selectTab(MainTab.Library) },
-        onToggle = viewModel::togglePlayback,
+        onToggle = { if (!isPreparing) viewModel.togglePlayback() },
         onNext = viewModel::next,
     )
 }
@@ -2067,9 +2807,14 @@ private fun SurfaceLike(content: @Composable () -> Unit) {
 private fun formatDuration(ms: Long): String {
     if (ms <= 0L) return "0:00"
     val totalSeconds = ms / 1000
-    val minutes = totalSeconds / 60
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
     val seconds = totalSeconds % 60
-    return "${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}"
+    return if (hours > 0) {
+        "$hours:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}"
+    } else {
+        "${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}"
+    }
 }
 
 private fun formatBytes(bytes: Long): String {
