@@ -31,6 +31,7 @@ data class RemoteItem(
     val isDirectory: Boolean,
     val size: Long?,
     val modifiedAt: String?,
+    val mimeType: String?,
 ) {
     val isSupportedAudio: Boolean
         get() = !isDirectory && AudioFormats.isSupported(displayName)
@@ -112,9 +113,12 @@ class WebDavClient(private val baseClient: OkHttpClient) {
     }
 
     suspend fun listDirectory(credentials: NasCredentials, remotePath: String): List<RemoteItem> =
-        listDirectoryInternal(credentials, remotePath)
+        listDirectoryRaw(credentials, remotePath)
             .filter { it.isDirectory || it.isSupportedAudio }
             .sortedWith(compareBy<RemoteItem> { !it.isDirectory }.thenBy { it.displayName.lowercase(Locale.ROOT) })
+
+    suspend fun listDirectoryRaw(credentials: NasCredentials, remotePath: String): List<RemoteItem> =
+        listDirectoryInternal(credentials, remotePath)
 
     suspend fun listLyricFiles(credentials: NasCredentials, remotePath: String): List<RemoteItem> =
         listDirectoryInternal(credentials, remotePath)
@@ -303,6 +307,7 @@ class WebDavClient(private val baseClient: OkHttpClient) {
                     when (parser.localNameCompat()) {
                         "href" -> current?.href = text.trim()
                         "displayname" -> current?.displayName = text.trim()
+                        "getcontenttype" -> current?.mimeType = text.trim().ifBlank { null }
                         "getcontentlength" -> current?.size = text.trim().toLongOrNull()
                         "getlastmodified" -> current?.modifiedAt = text.trim().ifBlank { null }
                         "response" -> current?.let { responses += it }.also { current = null }
@@ -313,10 +318,11 @@ class WebDavClient(private val baseClient: OkHttpClient) {
             event = parser.next()
         }
 
+        val requestedNormalized = requestedPath.trimEnd('/').ifBlank { "/" }
         return responses.mapNotNull { response ->
             val remotePath = response.href
                 ?.let { remotePathFromHref(credentials.baseUrl, it) }
-                ?.takeIf { it != requestedPath.trimEnd('/') }
+                ?.takeIf { it.trimEnd('/').ifBlank { "/" } != requestedNormalized }
                 ?: return@mapNotNull null
             val displayName = response.displayName
                 ?.takeIf { it.isNotBlank() }
@@ -327,6 +333,7 @@ class WebDavClient(private val baseClient: OkHttpClient) {
                 isDirectory = response.isDirectory,
                 size = response.size,
                 modifiedAt = response.modifiedAt,
+                mimeType = response.mimeType,
             )
         }
     }
@@ -393,6 +400,7 @@ class WebDavClient(private val baseClient: OkHttpClient) {
         var isDirectory: Boolean = false,
         var size: Long? = null,
         var modifiedAt: String? = null,
+        var mimeType: String? = null,
     )
 
     private companion object {
@@ -402,6 +410,7 @@ class WebDavClient(private val baseClient: OkHttpClient) {
   <d:prop>
     <d:displayname/>
     <d:resourcetype/>
+    <d:getcontenttype/>
     <d:getcontentlength/>
     <d:getlastmodified/>
   </d:prop>
@@ -423,9 +432,13 @@ class WebDavUnexpectedResponseException(
 }
 
 object AudioFormats {
-    private val supported = setOf("mp3", "flac", "m4a", "aac", "wav", "ogg", "opus")
+    private val supported = setOf("mp3", "flac", "m4a", "aac", "wav", "ogg", "opus", "wma", "ape", "alac")
 
     fun isSupported(fileName: String): Boolean =
         fileName.substringAfterLast('.', missingDelimiterValue = "")
             .lowercase(Locale.ROOT) in supported
+
+    fun extension(fileName: String): String =
+        fileName.substringAfterLast('.', missingDelimiterValue = "")
+            .lowercase(Locale.ROOT)
 }

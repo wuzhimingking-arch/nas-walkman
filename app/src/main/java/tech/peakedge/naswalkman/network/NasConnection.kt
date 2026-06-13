@@ -133,6 +133,7 @@ object WebDavEndpointResolver {
 interface NasFileClient {
     suspend fun testConnection(credentials: NasCredentials): WebDavResult
     suspend fun listDirectory(credentials: NasCredentials, remotePath: String): List<RemoteItem>
+    suspend fun listDirectoryRaw(credentials: NasCredentials, remotePath: String): List<RemoteItem>
     suspend fun listDirectories(credentials: NasCredentials, remotePath: String): List<NasDirectory>
     suspend fun listAudioFiles(credentials: NasCredentials, remotePath: String): List<NasAudioFile>
     suspend fun listLyricFiles(credentials: NasCredentials, remotePath: String): List<RemoteItem>
@@ -150,6 +151,9 @@ class WebDavNasFileClient(private val webDavClient: WebDavClient) : NasFileClien
 
     override suspend fun listDirectory(credentials: NasCredentials, remotePath: String): List<RemoteItem> =
         webDavClient.listDirectory(credentials, remotePath)
+
+    override suspend fun listDirectoryRaw(credentials: NasCredentials, remotePath: String): List<RemoteItem> =
+        webDavClient.listDirectoryRaw(credentials, remotePath)
 
     override suspend fun listDirectories(credentials: NasCredentials, remotePath: String): List<NasDirectory> =
         webDavClient.listDirectory(credentials, remotePath)

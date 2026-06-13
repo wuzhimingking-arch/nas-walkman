@@ -2,6 +2,7 @@ package tech.peakedge.naswalkman.ui
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -2140,9 +2141,11 @@ private fun MusicFolderManagerScreen(state: AppUiState, viewModel: AppViewModel)
     var localIncludeSubfolders by remember { mutableStateOf(true) }
     var nasIncludeSubfolders by remember { mutableStateOf(true) }
     val localFolderLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree(),
-    ) { uri ->
-        uri?.let { viewModel.addLocalMusicFolder(it, localIncludeSubfolders) }
+        contract = ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        result.data?.data?.let { uri ->
+            viewModel.addLocalMusicFolder(uri, result.data?.flags ?: 0, localIncludeSubfolders)
+        }
     }
 
     LazyColumn(
@@ -2175,7 +2178,7 @@ private fun MusicFolderManagerScreen(state: AppUiState, viewModel: AppViewModel)
                 SettingRow(
                     title = "添加手机本地文件夹",
                     value = "使用系统文件夹选择器",
-                    onClick = { localFolderLauncher.launch(null) },
+                    onClick = { localFolderLauncher.launch(openDocumentTreeIntent()) },
                 )
                 HorizontalDivider()
                 IncludeSubfolderRow(
@@ -2281,6 +2284,9 @@ private fun MusicFolderCard(
             checked = folder.includeSubfolders,
             onCheckedChange = onToggleInclude,
         )
+        if (BuildConfig.DEBUG && folder.sourceType == MusicSourceType.NAS) {
+            NasFolderDebugInfo(folder)
+        }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.End,
@@ -2299,10 +2305,51 @@ private fun MusicFolderCard(
     }
 }
 
+@Composable
+private fun NasFolderDebugInfo(folder: MusicFolderEntity) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text("Debug 扫描信息", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+        DebugLine("来源 ID", folder.id.toString())
+        DebugLine("保存路径", folder.path)
+        DebugLine("includeSubfolders", folder.includeSubfolders.toString())
+        DebugLine("上次扫描时间", folder.lastScannedAt?.let(::formatTimestamp).orEmpty())
+        DebugLine("上次扫描状态", folder.lastScanStatus.orEmpty())
+        DebugLine("上次发现文件数", folder.lastScannedFileCount?.toString().orEmpty())
+        DebugLine("上次发现音频数", folder.lastScannedAudioCount?.toString().orEmpty())
+        DebugLine("上次错误信息", folder.lastScanError.orEmpty())
+    }
+}
+
+@Composable
+private fun DebugLine(label: String, value: String) {
+    Text(
+        "$label：${value.ifBlank { "-" }}",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 3,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
 private fun sourceTypeLabel(type: MusicSourceType): String = when (type) {
     MusicSourceType.NAS -> "NAS"
     MusicSourceType.LOCAL -> "本地"
 }
+
+private fun openDocumentTreeIntent(): Intent =
+    Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+    }
 
 @Composable
 private fun SongInfoFetchProgressView(
@@ -2816,6 +2863,10 @@ private fun formatDuration(ms: Long): String {
         "${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}"
     }
 }
+
+private fun formatTimestamp(timestamp: Long): String =
+    java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+        .format(java.util.Date(timestamp))
 
 private fun formatBytes(bytes: Long): String {
     if (bytes <= 0L) return "0B"

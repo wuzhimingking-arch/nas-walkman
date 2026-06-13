@@ -35,8 +35,8 @@ android {
         applicationId = "tech.peakedge.naswalkman"
         minSdk = 26
         targetSdk = 36
-        versionCode = 12
-        versionName = "0.4.8"
+        versionCode = 15
+        versionName = "0.4.11"
     }
 
     signingConfigs {
@@ -102,6 +102,7 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     implementation("androidx.core:core-ktx:1.17.0")
+    implementation("androidx.documentfile:documentfile:1.1.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")

@@ -45,8 +45,29 @@ interface MusicFolderDao {
     @Query("UPDATE music_folders SET includeSubfolders = :includeSubfolders, updatedAt = :updatedAt WHERE id = :id")
     suspend fun updateIncludeSubfolders(id: Long, includeSubfolders: Boolean, updatedAt: Long)
 
-    @Query("UPDATE music_folders SET songCount = :songCount, lastScannedAt = :lastScannedAt, updatedAt = :updatedAt WHERE id = :id")
-    suspend fun updateScanStats(id: Long, songCount: Int, lastScannedAt: Long, updatedAt: Long)
+    @Query(
+        """
+        UPDATE music_folders
+        SET songCount = :songCount,
+            lastScanStatus = :status,
+            lastScanError = :error,
+            lastScannedFileCount = :fileCount,
+            lastScannedAudioCount = :audioCount,
+            lastScannedAt = :lastScannedAt,
+            updatedAt = :updatedAt
+        WHERE id = :id
+        """
+    )
+    suspend fun updateScanStats(
+        id: Long,
+        songCount: Int,
+        status: String,
+        error: String?,
+        fileCount: Int,
+        audioCount: Int,
+        lastScannedAt: Long,
+        updatedAt: Long,
+    )
 
     @Query("DELETE FROM music_folders WHERE id = :id")
     suspend fun deleteById(id: Long)

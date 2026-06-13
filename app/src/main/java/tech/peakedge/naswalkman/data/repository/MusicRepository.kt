@@ -2,15 +2,14 @@ package tech.peakedge.naswalkman.data.repository
 
 import android.content.Context
 import android.content.Intent
-import android.database.Cursor
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
-import android.provider.DocumentsContract
-import android.provider.OpenableColumns
+import android.util.Log
+import androidx.documentfile.provider.DocumentFile
 import androidx.room.withTransaction
 import okhttp3.Credentials
 import tech.peakedge.naswalkman.data.db.AppDatabase
@@ -36,6 +35,8 @@ import tech.peakedge.naswalkman.network.WebDavResult
 import tech.peakedge.naswalkman.network.WebDavUnexpectedResponseException
 import tech.peakedge.naswalkman.security.CredentialCipher
 import java.io.File
+import java.io.FileNotFoundException
+import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
@@ -86,6 +87,13 @@ sealed class DirectoryBrowserResult {
     data class Failure(val message: String) : DirectoryBrowserResult()
 }
 
+private data class SourceScanStats(
+    val fileCount: Int = 0,
+    val audioCount: Int = 0,
+    val skippedCount: Int = 0,
+    val folderCount: Int = 0,
+)
+
 data class LyricLine(
     val timeMs: Long?,
     val text: String,
@@ -104,6 +112,8 @@ sealed class LyricsLoadResult {
     data object NotFound : LyricsLoadResult()
     data class Failure(val message: String) : LyricsLoadResult()
 }
+
+class PlaybackSourceException(message: String) : Exception(message)
 
 class MusicRepository(
     private val context: Context,
@@ -385,21 +395,43 @@ class MusicRepository(
         WebDavResult.Success("已添加 NAS 音乐文件夹")
     }
 
-    suspend fun addLocalMusicFolder(uri: Uri, includeSubfolders: Boolean): WebDavResult = withContext(Dispatchers.IO) {
+    suspend fun addLocalMusicFolder(
+        uri: Uri,
+        grantFlags: Int,
+        includeSubfolders: Boolean,
+    ): WebDavResult = withContext(Dispatchers.IO) {
         val normalizedUri = uri.normalizeScheme()
         val uriText = normalizedUri.toString()
         val sourceKey = localSourceKey(uriText)
         if (database.musicFolderDao().getBySourceKey(sourceKey) != null) {
-            return@withContext WebDavResult.Failure("该音乐文件夹已存在")
+            return@withContext WebDavResult.Failure("该文件夹已添加")
         }
-        val persisted = runCatching {
-            context.contentResolver.takePersistableUriPermission(
-                normalizedUri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION,
-            )
-        }.isSuccess
+        val document = DocumentFile.fromTreeUri(context, normalizedUri)
+            ?: return@withContext WebDavResult.Failure("无法访问该文件夹，请重新选择")
+        if (!safeCanRead(document)) {
+            return@withContext WebDavResult.Failure("无法访问该文件夹，请重新选择")
+        }
+
+        val persistableFlags = grantFlags and
+            (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        if (persistableFlags and Intent.FLAG_GRANT_READ_URI_PERMISSION == 0) {
+            return@withContext WebDavResult.Failure("文件夹授权失败，请重新选择")
+        }
+        val persisted = try {
+            context.contentResolver.takePersistableUriPermission(normalizedUri, persistableFlags)
+            true
+        } catch (error: SecurityException) {
+            Log.w(TAG, "persist local folder permission failed: uri=$normalizedUri", error)
+            false
+        } catch (error: IllegalArgumentException) {
+            Log.w(TAG, "persist local folder permission failed: uri=$normalizedUri", error)
+            false
+        } catch (error: Exception) {
+            Log.w(TAG, "persist local folder permission failed: uri=$normalizedUri", error)
+            false
+        }
         if (!persisted && !hasPersistedReadPermission(normalizedUri)) {
-            return@withContext WebDavResult.Failure("无法保存文件夹访问权限，请重新选择本地文件夹")
+            return@withContext WebDavResult.Failure("文件夹授权失败，请重新选择")
         }
         val now = System.currentTimeMillis()
         database.musicFolderDao().upsert(
@@ -407,7 +439,7 @@ class MusicRepository(
                 sourceType = MusicSourceType.LOCAL,
                 sourceKey = sourceKey,
                 path = uriText,
-                displayName = queryDisplayName(normalizedUri).ifBlank { "本地音乐文件夹" },
+                displayName = queryDisplayName(normalizedUri),
                 includeSubfolders = includeSubfolders,
                 createdAt = now,
                 updatedAt = now,
@@ -513,10 +545,25 @@ class MusicRepository(
         sourceFolder: MusicFolderEntity,
         onProgress: (ScanProgress) -> Unit,
     ): WebDavResult {
+        val server = database.nasDao().getActiveNas()
         val credentials = currentCredentials()
-            ?: return WebDavResult.Failure("请先登录 NAS 后再扫描 NAS 文件夹")
+        Log.i(
+            TAG,
+            "NAS scan start folderId=${sourceFolder.id} " +
+                "folderPath=${sourceFolder.path} includeSubfolders=${sourceFolder.includeSubfolders} " +
+                "loggedIn=${credentials != null} baseHost=${credentials?.baseUrl?.safeHostForLog().orEmpty()}",
+        )
+        if (credentials == null) {
+            val stats = SourceScanStats()
+            val message = "NAS 未登录"
+            recordSourceScanFailure(sourceFolder.id, stats, message)
+            Log.w(TAG, "NAS scan failed folderId=${sourceFolder.id} reason=$message serverExists=${server != null}")
+            return WebDavResult.Failure("请先登录 NAS 后再扫描 NAS 文件夹")
+        }
         val discovered = mutableListOf<TrackEntity>()
         val scanId = System.currentTimeMillis()
+        var stats = SourceScanStats()
+        val visitedRemotePaths = mutableSetOf<String>()
         val rootDisplayPath = sourceFolder.displayName.ifBlank { nasFileClient.getDisplayPath(sourceFolder.path) }
         val stack = ArrayDeque<DirectoryCrumb>()
         stack += DirectoryCrumb(
@@ -529,18 +576,56 @@ class MusicRepository(
         return try {
             while (stack.isNotEmpty()) {
                 val folder = stack.removeLast()
+                val normalizedFolderPath = normalizeRemotePath(folder.remotePath)
+                if (!visitedRemotePaths.add(normalizedFolderPath)) {
+                    Log.d(TAG, "NAS scan skip folder path=$normalizedFolderPath reason=already_visited")
+                    continue
+                }
                 onProgress(ScanProgress(currentFolder = folder.displayPath, discovered = discovered.size, isRunning = true))
-                val items = nasFileClient.listDirectory(credentials, folder.remotePath)
+                Log.i(
+                    TAG,
+                    "NAS scan request folderId=${sourceFolder.id} path=${folder.remotePath} " +
+                        "depth=1 recursive=${sourceFolder.includeSubfolders}",
+                )
+                val items = nasFileClient.listDirectoryRaw(credentials, folder.remotePath)
+                val folderCount = items.count { it.isDirectory }
+                val fileCount = items.count { !it.isDirectory }
+                val audioCount = items.count { it.isSupportedAudio }
+                stats = stats.copy(
+                    fileCount = stats.fileCount + fileCount,
+                    audioCount = stats.audioCount + audioCount,
+                    folderCount = stats.folderCount + folderCount,
+                )
+                Log.i(
+                    TAG,
+                    "NAS scan response folderId=${sourceFolder.id} path=${folder.remotePath} " +
+                        "httpStatus=207 itemCount=${items.size} fileCount=$fileCount folderCount=$folderCount audioCount=$audioCount",
+                )
                 for (item in items) {
                     if (item.isDirectory) {
                         if (sourceFolder.includeSubfolders) {
+                            Log.d(TAG, "NAS scan enter folder path=${item.remotePath} name=${item.displayName}")
                             stack += DirectoryCrumb(
                                 name = item.displayName,
                                 remotePath = item.remotePath,
                                 displayPath = childDisplayPath(folder.displayPath, item.displayName),
                             )
+                        } else {
+                            Log.d(TAG, "NAS scan skip folder path=${item.remotePath} reason=includeSubfolders_disabled")
                         }
-                    } else if (item.isSupportedAudio) {
+                    } else {
+                        val extension = AudioFormats.extension(item.displayName)
+                        val isAudio = item.isSupportedAudio
+                        Log.d(
+                            TAG,
+                            "NAS scan file name=${item.displayName} path=${item.remotePath} extension=$extension " +
+                                "mimeType=${item.mimeType.orEmpty()} isAudio=$isAudio size=${item.size} modifiedAt=${item.modifiedAt}",
+                        )
+                        if (!isAudio) {
+                            stats = stats.copy(skippedCount = stats.skippedCount + 1)
+                            Log.d(TAG, "NAS scan skip file path=${item.remotePath} reason=unsupported_extension extension=$extension")
+                            continue
+                        }
                         val existing = database.trackDao().getTrackByRemotePath(credentials.serverId, item.remotePath)
                         discovered += item.toTrack(
                             credentials = credentials,
@@ -554,11 +639,46 @@ class MusicRepository(
                     }
                 }
             }
-            finishSourceScan(sourceFolder.id, discovered, scanId)
+            val status = if (discovered.isEmpty()) "未发现支持的音频文件" else "成功"
+            val error = if (discovered.isEmpty()) "扫描完成，但没有发现支持的音频文件" else null
+            finishSourceScan(sourceFolder.id, discovered, scanId, stats, status, error)
             onProgress(ScanProgress(discovered = discovered.size, isRunning = false))
-            WebDavResult.Success()
-        } catch (_: Exception) {
+            Log.i(
+                TAG,
+                "NAS scan complete folderId=${sourceFolder.id} totalFiles=${stats.fileCount} " +
+                    "totalFolders=${stats.folderCount} audio=${stats.audioCount} added=${discovered.size} " +
+                    "skipped=${stats.skippedCount} status=$status error=${error.orEmpty()}",
+            )
+            if (discovered.isEmpty()) {
+                WebDavResult.Success("扫描完成，但没有发现支持的音频文件")
+            } else {
+                WebDavResult.Success()
+            }
+        } catch (error: WebDavHttpException) {
             onProgress(ScanProgress(discovered = discovered.size, isRunning = false))
+            val message = when (error.code) {
+                401, 403 -> "文件夹没有读取权限"
+                404 -> "文件夹不存在"
+                else -> "NAS 连接失败（HTTP ${error.code}）"
+            }
+            recordSourceScanFailure(sourceFolder.id, stats, message)
+            Log.e(
+                TAG,
+                "NAS scan failed folderId=${sourceFolder.id} status=${error.code} " +
+                    "totalFiles=${stats.fileCount} audio=${stats.audioCount} skipped=${stats.skippedCount} reason=$message",
+                error,
+            )
+            WebDavResult.Failure(message)
+        } catch (error: Exception) {
+            onProgress(ScanProgress(discovered = discovered.size, isRunning = false))
+            val message = "扫描失败，请查看日志"
+            recordSourceScanFailure(sourceFolder.id, stats, message)
+            Log.e(
+                TAG,
+                "NAS scan failed folderId=${sourceFolder.id} totalFiles=${stats.fileCount} " +
+                    "audio=${stats.audioCount} skipped=${stats.skippedCount} reason=${error.message}",
+                error,
+            )
             WebDavResult.Failure("NAS 文件夹扫描失败，请检查 NAS 连接和目录权限")
         }
     }
@@ -568,79 +688,114 @@ class MusicRepository(
         onProgress: (ScanProgress) -> Unit,
     ): WebDavResult {
         val treeUri = runCatching { Uri.parse(sourceFolder.path) }.getOrNull()
-            ?: return WebDavResult.Failure("本地文件夹 Uri 无效，请重新添加")
+            ?: return WebDavResult.Failure("无法访问该文件夹，请重新选择")
         if (!hasPersistedReadPermission(treeUri)) {
-            return WebDavResult.Failure("本地文件夹访问权限已失效，请重新添加")
+            return WebDavResult.Failure("文件夹授权失败，请重新选择")
+        }
+        val root = DocumentFile.fromTreeUri(context, treeUri)
+            ?: return WebDavResult.Failure("无法访问该文件夹，请重新选择")
+        if (!safeCanRead(root)) {
+            return WebDavResult.Failure("无法访问该文件夹，请重新选择")
         }
 
         val discovered = mutableListOf<TrackEntity>()
         val scanId = System.currentTimeMillis()
-        val rootDocumentId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull()
-            ?: return WebDavResult.Failure("本地文件夹 Uri 无效，请重新添加")
+        var stats = SourceScanStats()
         val stack = ArrayDeque<LocalDirectory>()
-        stack += LocalDirectory(rootDocumentId, sourceFolder.displayName.ifBlank { "本地音乐文件夹" })
+        stack += LocalDirectory(root, sourceFolder.displayName.ifBlank { "本地音乐文件夹" })
         onProgress(ScanProgress(currentFolder = sourceFolder.displayName, isRunning = true))
 
         return try {
             while (stack.isNotEmpty()) {
                 val directory = stack.removeLast()
                 onProgress(ScanProgress(currentFolder = directory.displayPath, discovered = discovered.size, isRunning = true))
-                val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, directory.documentId)
-                context.contentResolver.query(
-                    childrenUri,
-                    LOCAL_DOCUMENT_COLUMNS,
-                    null,
-                    null,
-                    null,
-                )?.use { cursor ->
-                    while (cursor.moveToNext()) {
-                        val documentId = cursor.stringValue(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-                            ?: continue
-                        val displayName = cursor.stringValue(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-                            ?: continue
-                        val mimeType = cursor.stringValue(DocumentsContract.Document.COLUMN_MIME_TYPE)
-                        val isDirectory = mimeType == DocumentsContract.Document.MIME_TYPE_DIR
-                        if (isDirectory) {
-                            if (sourceFolder.includeSubfolders) {
-                                stack += LocalDirectory(
-                                    documentId = documentId,
-                                    displayPath = childDisplayPath(directory.displayPath, displayName),
-                                )
-                            }
-                            continue
+                val children = try {
+                    directory.documentFile.listFiles()
+                } catch (error: UnsupportedOperationException) {
+                    Log.w(TAG, "skip unsupported local directory: ${directory.documentFile.uri}", error)
+                    emptyArray()
+                } catch (error: SecurityException) {
+                    Log.w(TAG, "skip unreadable local directory: ${directory.documentFile.uri}", error)
+                    emptyArray()
+                } catch (error: IllegalArgumentException) {
+                    Log.w(TAG, "skip invalid local directory: ${directory.documentFile.uri}", error)
+                    emptyArray()
+                } catch (error: Exception) {
+                    Log.w(TAG, "skip failed local directory: ${directory.documentFile.uri}", error)
+                    emptyArray()
+                }
+                for (child in children) {
+                    val displayName = safeDocumentName(child)
+                    if (displayName.isBlank()) continue
+                    val isDirectory = safeIsDirectory(child)
+                    if (isDirectory) {
+                        stats = stats.copy(folderCount = stats.folderCount + 1)
+                        if (sourceFolder.includeSubfolders && safeCanRead(child)) {
+                            stack += LocalDirectory(
+                                documentFile = child,
+                                displayPath = childDisplayPath(directory.displayPath, displayName),
+                            )
                         }
-                        if (!AudioFormats.isSupported(displayName)) continue
-                        val documentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId)
-                        val documentUriText = documentUri.toString()
-                        val existing = database.trackDao().getTrackByRemotePath(LOCAL_SOURCE_SERVER_ID, documentUriText)
-                        discovered += localDocumentToTrack(
+                        continue
+                    }
+                    stats = stats.copy(fileCount = stats.fileCount + 1)
+                    if (!safeIsFile(child) || !AudioFormats.isSupported(displayName)) continue
+                    stats = stats.copy(audioCount = stats.audioCount + 1)
+                    val documentUri = child.uri
+                    val documentUriText = documentUri.toString()
+                    val existing = database.trackDao().getTrackByRemotePath(LOCAL_SOURCE_SERVER_ID, documentUriText)
+                    val track = try {
+                        localDocumentToTrack(
                             sourceFolderId = sourceFolder.id,
                             documentUri = documentUri,
                             displayName = displayName,
-                            size = cursor.longValue(DocumentsContract.Document.COLUMN_SIZE),
-                            modifiedAt = cursor.longValue(DocumentsContract.Document.COLUMN_LAST_MODIFIED),
+                            size = safeLength(child),
+                            modifiedAt = safeLastModified(child),
                             scanId = scanId,
                             existing = existing,
                         )
+                    } catch (error: SecurityException) {
+                        Log.w(TAG, "skip unreadable local audio: $documentUriText", error)
+                        null
+                    } catch (error: IllegalArgumentException) {
+                        Log.w(TAG, "skip invalid local audio: $documentUriText", error)
+                        null
+                    } catch (error: Exception) {
+                        Log.w(TAG, "skip failed local audio: $documentUriText", error)
+                        null
+                    }
+                    if (track != null) {
+                        discovered += track
                         if (discovered.size % 20 == 0) {
                             database.trackDao().upsertAll(discovered.toList())
                         }
                     }
                 }
             }
-            finishSourceScan(sourceFolder.id, discovered, scanId)
+            val status = if (discovered.isEmpty()) "未发现支持的音频文件" else "成功"
+            val error = if (discovered.isEmpty()) "扫描完成，但没有发现支持的音频文件" else null
+            finishSourceScan(sourceFolder.id, discovered, scanId, stats, status, error)
             onProgress(ScanProgress(discovered = discovered.size, isRunning = false))
             WebDavResult.Success()
         } catch (_: SecurityException) {
             onProgress(ScanProgress(discovered = discovered.size, isRunning = false))
-            WebDavResult.Failure("本地文件夹访问权限已失效，请重新添加")
+            recordSourceScanFailure(sourceFolder.id, stats, "扫描本地音乐文件夹失败，请检查权限")
+            WebDavResult.Failure("扫描本地音乐文件夹失败，请检查权限")
         } catch (_: Exception) {
             onProgress(ScanProgress(discovered = discovered.size, isRunning = false))
-            WebDavResult.Failure("本地文件夹扫描失败，请重新选择文件夹")
+            recordSourceScanFailure(sourceFolder.id, stats, "扫描本地音乐文件夹失败，请检查权限")
+            WebDavResult.Failure("扫描本地音乐文件夹失败，请检查权限")
         }
     }
 
-    private suspend fun finishSourceScan(sourceFolderId: Long, tracks: List<TrackEntity>, scanId: Long) {
+    private suspend fun finishSourceScan(
+        sourceFolderId: Long,
+        tracks: List<TrackEntity>,
+        scanId: Long,
+        stats: SourceScanStats,
+        status: String,
+        error: String? = null,
+    ) {
         database.withTransaction {
             database.trackDao().upsertAll(tracks)
             if (tracks.isEmpty()) {
@@ -651,10 +806,27 @@ class MusicRepository(
             database.musicFolderDao().updateScanStats(
                 id = sourceFolderId,
                 songCount = tracks.size,
+                status = status,
+                error = error,
+                fileCount = stats.fileCount,
+                audioCount = stats.audioCount,
                 lastScannedAt = System.currentTimeMillis(),
                 updatedAt = System.currentTimeMillis(),
             )
         }
+    }
+
+    private suspend fun recordSourceScanFailure(sourceFolderId: Long, stats: SourceScanStats, error: String) {
+        database.musicFolderDao().updateScanStats(
+            id = sourceFolderId,
+            songCount = database.trackDao().countForSourceFolder(sourceFolderId),
+            status = "失败",
+            error = error,
+            fileCount = stats.fileCount,
+            audioCount = stats.audioCount,
+            lastScannedAt = System.currentTimeMillis(),
+            updatedAt = System.currentTimeMillis(),
+        )
     }
 
     suspend fun toggleFavorite(trackId: String) {
@@ -792,7 +964,7 @@ class MusicRepository(
 
     suspend fun mediaUriFor(track: TrackEntity): String? = withContext(Dispatchers.IO) {
         if (track.sourceType == MusicSourceType.LOCAL) {
-            return@withContext track.remotePath.takeIf { it.isNotBlank() }
+            return@withContext validatedLocalPlaybackUri(track.remotePath)
         }
         track.localCachePath
             ?.let(::File)
@@ -800,6 +972,49 @@ class MusicRepository(
             ?.let { return@withContext android.net.Uri.fromFile(it).toString() }
         val credentials = currentCredentials() ?: return@withContext null
         return@withContext nasFileClient.urlFor(credentials, track.remotePath)
+    }
+
+    private fun validatedLocalPlaybackUri(uriText: String): String? {
+        if (uriText.isBlank()) throw PlaybackSourceException("无法播放本地音乐，请检查文件权限或重新添加文件夹")
+        val uri = try {
+            Uri.parse(uriText)
+        } catch (_: Exception) {
+            throw PlaybackSourceException("无法播放本地音乐，请检查文件权限或重新添加文件夹")
+        }
+        return when (uri.scheme?.lowercase(Locale.ROOT)) {
+            "content" -> {
+                if (!hasPersistedReadPermissionFor(uri)) {
+                    throw PlaybackSourceException("无法播放本地音乐，请检查文件权限或重新添加文件夹")
+                }
+                try {
+                    context.contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
+                        if (descriptor.statSize == 0L) {
+                            Log.w(TAG, "local playback uri reports zero length: $uri")
+                        }
+                    } ?: throw PlaybackSourceException("无法播放本地音乐，请检查文件权限或重新添加文件夹")
+                    uri.toString()
+                } catch (error: SecurityException) {
+                    Log.w(TAG, "local playback permission denied: $uri", error)
+                    throw PlaybackSourceException("无法播放本地音乐，请检查文件权限或重新添加文件夹")
+                } catch (error: FileNotFoundException) {
+                    Log.w(TAG, "local playback file missing: $uri", error)
+                    throw PlaybackSourceException("无法播放本地音乐，请检查文件权限或重新添加文件夹")
+                } catch (error: IllegalArgumentException) {
+                    Log.w(TAG, "local playback uri invalid: $uri", error)
+                    throw PlaybackSourceException("无法播放本地音乐，请检查文件权限或重新添加文件夹")
+                } catch (error: IOException) {
+                    Log.w(TAG, "local playback uri open failed: $uri", error)
+                    throw PlaybackSourceException("无法播放本地音乐，请检查文件权限或重新添加文件夹")
+                }
+            }
+            "file" -> {
+                val file = runCatching { File(requireNotNull(uri.path)) }.getOrNull()
+                if (file?.exists() == true && file.canRead()) uri.toString() else {
+                    throw PlaybackSourceException("无法播放本地音乐，请检查文件权限或重新添加文件夹")
+                }
+            }
+            else -> throw PlaybackSourceException("无法播放本地音乐，请检查文件权限或重新添加文件夹")
+        }
     }
 
     suspend fun deleteBinding() {
@@ -1295,7 +1510,7 @@ class MusicRepository(
     }
 
     private data class LocalDirectory(
-        val documentId: String,
+        val documentFile: DocumentFile,
         val displayPath: String,
     )
 
@@ -1306,36 +1521,105 @@ class MusicRepository(
         }
     }
 
-    private fun queryDisplayName(uri: Uri): String =
-        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-            ?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    cursor.stringValue(OpenableColumns.DISPLAY_NAME).orEmpty()
-                } else {
-                    ""
-                }
-            }
+    private fun hasPersistedReadPermissionFor(uri: Uri): Boolean {
+        val uriText = uri.toString()
+        return context.contentResolver.persistedUriPermissions.any { permission ->
+            if (!permission.isReadPermission) return@any false
+            val treeUriText = permission.uri.toString()
+            uriText == treeUriText || uriText.startsWith("$treeUriText/")
+        }
+    }
+
+    private fun queryDisplayName(uri: Uri): String {
+        val documentName = try {
+            DocumentFile.fromTreeUri(context, uri)?.name
+        } catch (error: UnsupportedOperationException) {
+            Log.w(TAG, "query tree uri display name unsupported: $uri", error)
+            null
+        } catch (error: SecurityException) {
+            Log.w(TAG, "query tree uri display name denied: $uri", error)
+            null
+        } catch (error: IllegalArgumentException) {
+            Log.w(TAG, "query tree uri display name invalid: $uri", error)
+            null
+        } catch (error: Exception) {
+            Log.w(TAG, "query tree uri display name failed: $uri", error)
+            null
+        }
+        return documentName
+            ?.trim()
             ?.takeIf { it.isNotBlank() }
-            ?: runCatching {
-                DocumentsContract.getTreeDocumentId(uri)
-                    .substringAfter(':')
-                    .substringAfterLast('/')
-            }.getOrDefault("").ifBlank { uri.lastPathSegment.orEmpty() }
-
-    private fun Cursor.stringValue(columnName: String): String? {
-        val index = getColumnIndex(columnName)
-        return if (index >= 0 && !isNull(index)) getString(index) else null
+            ?: displayNameFromTreeUri(uri)
+            ?: LOCAL_FOLDER_FALLBACK_NAME
     }
 
-    private fun Cursor.longValue(columnName: String): Long? {
-        val index = getColumnIndex(columnName)
-        return if (index >= 0 && !isNull(index)) getLong(index) else null
+    private fun displayNameFromTreeUri(uri: Uri): String? {
+        val segment = uri.lastPathSegment.orEmpty()
+        val decoded = runCatching {
+            java.net.URLDecoder.decode(segment, Charsets.UTF_8.name())
+        }.getOrDefault(segment)
+        return decoded
+            .substringAfterLast(':')
+            .substringAfterLast('/')
+            .trim()
+            .takeIf { it.isNotBlank() }
     }
+
+    private fun safeDocumentName(document: DocumentFile): String =
+        try {
+            document.name.orEmpty()
+        } catch (error: Exception) {
+            Log.w(TAG, "read local document name failed: ${document.uri}", error)
+            ""
+        }
+
+    private fun safeCanRead(document: DocumentFile): Boolean =
+        try {
+            document.canRead()
+        } catch (error: Exception) {
+            Log.w(TAG, "read local document permission failed: ${document.uri}", error)
+            false
+        }
+
+    private fun safeIsDirectory(document: DocumentFile): Boolean =
+        try {
+            document.isDirectory
+        } catch (error: Exception) {
+            Log.w(TAG, "read local document directory flag failed: ${document.uri}", error)
+            false
+        }
+
+    private fun safeIsFile(document: DocumentFile): Boolean =
+        try {
+            document.isFile
+        } catch (error: Exception) {
+            Log.w(TAG, "read local document file flag failed: ${document.uri}", error)
+            false
+        }
+
+    private fun safeLength(document: DocumentFile): Long? =
+        try {
+            document.length().takeIf { it >= 0L }
+        } catch (error: Exception) {
+            Log.w(TAG, "read local document length failed: ${document.uri}", error)
+            null
+        }
+
+    private fun safeLastModified(document: DocumentFile): Long? =
+        try {
+            document.lastModified().takeIf { it > 0L }
+        } catch (error: Exception) {
+            Log.w(TAG, "read local document modified time failed: ${document.uri}", error)
+            null
+        }
 
     private fun nasSourceKey(serverId: Long, remotePath: String): String =
         "NAS:$serverId:${normalizeRemotePath(remotePath)}"
 
     private fun localSourceKey(uriText: String): String = "LOCAL:$uriText"
+
+    private fun String.safeHostForLog(): String =
+        runCatching { Uri.parse(this).host.orEmpty() }.getOrDefault("")
 
     private suspend fun localDocumentToTrack(
         sourceFolderId: Long,
@@ -1357,7 +1641,7 @@ class MusicRepository(
             id = existing?.id ?: stableTrackId(LOCAL_SOURCE_SERVER_ID, documentUriText),
             nasServerId = LOCAL_SOURCE_SERVER_ID,
             sourceType = MusicSourceType.LOCAL,
-            sourceFolderId = existing?.sourceFolderId ?: sourceFolderId,
+            sourceFolderId = sourceFolderId,
             remotePath = documentUriText,
             fileName = displayName,
             title = existing?.takeIf { isSameSource }?.title ?: fallback.title,
@@ -1401,7 +1685,7 @@ class MusicRepository(
             id = existing?.id ?: stableTrackId(credentials.serverId, remotePath),
             nasServerId = credentials.serverId,
             sourceType = MusicSourceType.NAS,
-            sourceFolderId = existing?.sourceFolderId ?: sourceFolderId,
+            sourceFolderId = sourceFolderId,
             remotePath = remotePath,
             fileName = displayName,
             title = existing?.takeIf { isSameSource }?.title ?: fallback.title,
@@ -1445,14 +1729,9 @@ class MusicRepository(
         const val COVER_CACHE_LIMIT_BYTES = 64L * 1024L * 1024L
         const val METADATA_READ_TIMEOUT_MS = 2_500L
         const val LOCAL_SOURCE_SERVER_ID = -1L
+        const val LOCAL_FOLDER_FALLBACK_NAME = "本地音乐文件夹"
         const val UNKNOWN_ARTIST = "未知歌手"
-        val LOCAL_DOCUMENT_COLUMNS = arrayOf(
-            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-            DocumentsContract.Document.COLUMN_MIME_TYPE,
-            DocumentsContract.Document.COLUMN_SIZE,
-            DocumentsContract.Document.COLUMN_LAST_MODIFIED,
-        )
+        const val TAG = "MusicRepository"
         val LRC_TIME_REGEX = Regex("""\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?]""")
         val LRC_METADATA_REGEX = Regex("""^\[[a-zA-Z]+:.*]$""")
         val COMMON_DIRECTORY_NAMES = setOf(

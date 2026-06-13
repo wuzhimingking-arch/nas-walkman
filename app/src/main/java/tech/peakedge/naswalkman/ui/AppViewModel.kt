@@ -22,6 +22,7 @@ import tech.peakedge.naswalkman.NasMusicApplication
 import tech.peakedge.naswalkman.data.db.NasConnectionMode
 import tech.peakedge.naswalkman.data.db.NasServerEntity
 import tech.peakedge.naswalkman.data.db.MusicFolderEntity
+import tech.peakedge.naswalkman.data.db.MusicSourceType
 import tech.peakedge.naswalkman.data.db.PlaylistSummary
 import tech.peakedge.naswalkman.data.db.TrackEntity
 import tech.peakedge.naswalkman.data.db.TrackWithPlayCount
@@ -32,6 +33,7 @@ import tech.peakedge.naswalkman.data.repository.LyricsContent
 import tech.peakedge.naswalkman.data.repository.LyricsLoadResult
 import tech.peakedge.naswalkman.data.repository.NasForm
 import tech.peakedge.naswalkman.data.repository.MusicRepository
+import tech.peakedge.naswalkman.data.repository.PlaybackSourceException
 import tech.peakedge.naswalkman.data.repository.ScanProgress
 import tech.peakedge.naswalkman.network.RemoteItem
 import tech.peakedge.naswalkman.network.WebDavResult
@@ -223,7 +225,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         ): ListenableFuture<SessionResult> {
             if (command.customAction == MusicPlaybackService.ACTION_PLAYBACK_RECOVERY_FAILED) {
                 _uiState.update {
-                    it.copy(message = "播放失败，请检查文件格式或网络连接")
+                    val failedTrack = it.currentTrack ?: it.preparingTrack
+                    it.copy(
+                        preparingTrackId = null,
+                        playbackStatus = PlaybackUiStatus.Error,
+                        isPlaying = false,
+                        message = playbackFailureMessage(failedTrack, null),
+                    )
                 }
                 return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
             }
@@ -571,10 +579,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(showMusicFolderManager = false) }
     }
 
-    fun addLocalMusicFolder(uri: Uri, includeSubfolders: Boolean) {
+    fun addLocalMusicFolder(uri: Uri, grantFlags: Int, includeSubfolders: Boolean) {
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true) }
-            val result = repository.addLocalMusicFolder(uri, includeSubfolders)
+            val result = repository.addLocalMusicFolder(uri, grantFlags, includeSubfolders)
             _uiState.update {
                 it.copy(
                     isBusy = false,
@@ -709,12 +717,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             runCatching {
                 val player = controller ?: error("播放器尚未准备好")
                 val sourceQueue = queue.takeIf { items -> items.any { it.id == track.id } } ?: listOf(track)
-                val mediaItems = buildMediaItems(sourceQueue, requestId)
+                val mediaItems = buildMediaItems(sourceQueue, requestId, track.id)
                 if (requestId != playRequestId) return@launch
 
                 val startIndex = mediaItems.indexOfFirst { it.first.id == track.id }.coerceAtLeast(0)
                 val items = mediaItems.map { it.second }
-                if (items.isEmpty()) error("无法播放，文件不可访问或 NAS 未登录")
+                if (items.isEmpty()) error(playbackFailureMessage(track, null))
 
                 player.setMediaItems(items, startIndex, 0L)
                 player.prepare()
@@ -741,7 +749,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             preparingTrackId = null,
                             playbackStatus = PlaybackUiStatus.Error,
                             isPlaying = false,
-                            message = error.message ?: "播放失败，请检查文件格式或网络连接",
+                            message = playbackFailureMessage(track, error),
                         )
                     }
                 }
@@ -757,14 +765,29 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun buildMediaItems(
         tracks: List<TrackEntity>,
         requestId: Long,
+        requestedTrackId: String,
     ): List<Pair<TrackEntity, MediaItem>> = withContext(Dispatchers.IO) {
         val items = mutableListOf<Pair<TrackEntity, MediaItem>>()
         for (item in tracks) {
             if (!isActive || requestId != playRequestId) break
-            val uri = repository.mediaUriFor(item) ?: continue
+            val uri = try {
+                repository.mediaUriFor(item)
+            } catch (error: PlaybackSourceException) {
+                if (item.id == requestedTrackId) throw error
+                null
+            } catch (error: Exception) {
+                if (item.id == requestedTrackId) throw error
+                null
+            }
+            if (uri == null) {
+                if (item.id == requestedTrackId) {
+                    throw PlaybackSourceException(playbackFailureMessage(item, null))
+                }
+                continue
+            }
             items += item to MediaItem.Builder()
                 .setMediaId(item.id)
-                .setUri(uri)
+                .setUri(Uri.parse(uri))
                 .setMediaMetadata(
                     MediaMetadata.Builder()
                         .setTitle(item.title)
@@ -790,7 +813,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         preparingTrackId = null,
                         playbackStatus = PlaybackUiStatus.Error,
                         isPlaying = false,
-                        message = "播放加载超时，请检查网络连接后重试",
+                        message = playbackFailureMessage(it.preparingTrack ?: it.currentTrack, null),
                     )
                 } else {
                     it
@@ -804,6 +827,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             player.stop()
             player.clearMediaItems()
         }
+    }
+
+    private fun playbackFailureMessage(track: TrackEntity?, error: Throwable?): String {
+        if (error is PlaybackSourceException && !error.message.isNullOrBlank()) return error.message.orEmpty()
+        return if (track?.isLocalPlaybackSource() == true) {
+            "无法播放本地音乐，请检查文件权限或重新添加文件夹"
+        } else {
+            "网络连接错误，请检查 NAS 连接"
+        }
+    }
+
+    private fun TrackEntity.isLocalPlaybackSource(): Boolean {
+        if (sourceType == MusicSourceType.LOCAL) return true
+        val scheme = runCatching { Uri.parse(remotePath).scheme?.lowercase() }.getOrNull()
+        return scheme == "content" || scheme == "file"
     }
 
     fun playFolderItem(item: RemoteItem) {
@@ -1230,6 +1268,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         override fun onPlayerError(error: PlaybackException) {
             playbackTimeoutJob?.cancel()
             val failedTrackId = controller?.currentMediaItem?.mediaId ?: _uiState.value.preparingTrackId
+            val failedTrack = _uiState.value.tracks.firstOrNull { it.id == failedTrackId }
+                ?: _uiState.value.preparingTrack
+                ?: _uiState.value.currentTrack
             controller?.let(::resetPlayerAfterFailure)
             _uiState.update {
                 it.copy(
@@ -1237,7 +1278,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     currentTrackId = if (it.currentTrackId == failedTrackId) null else it.currentTrackId,
                     playbackStatus = PlaybackUiStatus.Error,
                     isPlaying = false,
-                    message = "播放失败，请检查文件格式或网络连接",
+                    message = playbackFailureMessage(failedTrack, error),
                 )
             }
         }
